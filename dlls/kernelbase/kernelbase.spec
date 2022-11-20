@@ -1492,7 +1492,7 @@
 @ stdcall SetProcessAffinityUpdateMode(long long)
 # @ stub SetProcessDefaultCpuSets
 @ stdcall SetProcessGroupAffinity(long ptr ptr)
-# @ stub SetProcessInformation
+@ stdcall SetProcessInformation(long long ptr long)
 @ stdcall SetProcessMitigationPolicy(long ptr long)
 @ stdcall SetProcessPreferredUILanguages(long ptr ptr)
 @ stdcall SetProcessPriorityBoost(long long)
