@@ -289,6 +289,21 @@ static void test_VirtualAllocFromApp(void)
             p, GetLastError());
 }
 
+static void test_QueryProcessCycleTime(void)
+{
+    ULONG64 cycles1, cycles2;
+    BOOL ret;
+
+    ret = QueryProcessCycleTime( GetCurrentProcess(), &cycles1 );
+    ok( ret, "QueryProcessCycleTime failed, error %lu.\n", GetLastError() );
+
+    ret = QueryProcessCycleTime( GetCurrentProcess(), &cycles2 );
+    ok( ret, "QueryProcessCycleTime failed, error %lu.\n", GetLastError() );
+
+    todo_wine
+    ok( cycles2 > cycles1, "CPU cycles used by process should be increasing.\n" );
+}
+
 static void init_funcs(void)
 {
     HMODULE hmod = GetModuleHandleA("kernelbase.dll");
@@ -309,4 +324,5 @@ START_TEST(process)
     test_MapViewOfFile3();
     test_VirtualAlloc2();
     test_VirtualAllocFromApp();
+    test_QueryProcessCycleTime();
 }
