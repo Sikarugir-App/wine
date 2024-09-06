@@ -22,6 +22,8 @@
  * native headers.
  */
 
+/* 32on64 FIXME: All changes to wldap discarded. There were many, and my impression is they
+ * got partially upstreamed in a different way */
 typedef enum {
     WLDAP32_LDAP_SUCCESS                 =   0x00,
     WLDAP32_LDAP_UNWILLING_TO_PERFORM    =   0x35,
@@ -210,14 +212,14 @@ static const WCHAR LDAP_CONTROL_VLVRESPONSE_W[] = {'2','.','1','6','.','8','4','
 
 typedef struct ldapcontrolA
 {
-    PCHAR ldctl_oid;
+    CHAR * WIN32PTR ldctl_oid;
     struct WLDAP32_berval ldctl_value;
     BOOLEAN ldctl_iscritical;
 } LDAPControlA, *PLDAPControlA;
 
 typedef struct ldapcontrolW
 {
-    PWCHAR ldctl_oid;
+    WCHAR * WIN32PTR ldctl_oid;
     struct WLDAP32_berval ldctl_value;
     BOOLEAN ldctl_iscritical;
 } LDAPControlW, *PLDAPControlW;

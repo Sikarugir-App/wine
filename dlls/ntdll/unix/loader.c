@@ -89,8 +89,12 @@
 #include "winioctl.h"
 #include "winternl.h"
 #include "unix_private.h"
+#include "esync.h"
+#define WINE_LIST_HOSTADDRSPACE
 #include "wine/list.h"
 #include "wine/debug.h"
+
+/* 32on64 FIXME: A lot of complicated changes discarded. AJ, fix it. */
 
 WINE_DEFAULT_DEBUG_CHANNEL(module);
 
@@ -100,8 +104,20 @@ void     (WINAPI *pKiUserApcDispatcher)(CONTEXT*,ULONG_PTR,ULONG_PTR,ULONG_PTR,P
 NTSTATUS (WINAPI *pKiUserExceptionDispatcher)(EXCEPTION_RECORD*,CONTEXT*) = NULL;
 void     (WINAPI *pLdrInitializeThunk)(CONTEXT*,void**,ULONG_PTR,ULONG_PTR) = NULL;
 void     (WINAPI *pRtlUserThreadStart)( PRTL_THREAD_START_ROUTINE entry, void *arg ) = NULL;
+ULONG    (WINAPI *pRtlFindClearBitsAndSet)(PRTL_BITMAP lpBits, ULONG ulCount, ULONG ulHint) = NULL;
+#ifdef __i386_on_x86_64__
+void *   (WINAPI *pRtlAllocateHeap)( HANDLE heap, ULONG flags, SIZE_T size ) = NULL;
+BOOLEAN  (WINAPI *pRtlFreeHeap)( HANDLE heap, ULONG flags, void *ptr ) = NULL;
+#endif
+
+void     (WINAPI *pLdrInitializeThunk_stdcall32)(CONTEXT*,void**,ULONG_PTR,ULONG_PTR) = NULL;
+static void LdrInitializeThunk_stdcall64(CONTEXT *context, void** unknown2, ULONG_PTR unknown3, ULONG_PTR unknown4)
+{
+    pLdrInitializeThunk_stdcall32(context, unknown2, unknown3, unknown4);
+}
 
 static NTSTATUS (CDECL *p__wine_set_unix_funcs)( int version, const struct unix_funcs *funcs );
+static void *syscall_dispatcher;
 
 #ifdef __GNUC__
 static void fatal_error( const char *err, ... ) __attribute__((noreturn, format(printf,1,2)));
@@ -115,17 +131,17 @@ static const BOOL use_preloader = FALSE;
 
 static const BOOL is_win64 = (sizeof(void *) > sizeof(int));
 
-static char *argv0;
-static const char *bin_dir;
-static const char *dll_dir;
+static char * HOSTPTR argv0;
+static const char * HOSTPTR bin_dir;
+static const char * HOSTPTR dll_dir;
 static SIZE_T dll_path_maxlen;
 
-const char *home_dir = NULL;
-const char *data_dir = NULL;
-const char *build_dir = NULL;
-const char *config_dir = NULL;
-const char **dll_paths = NULL;
-const char *user_name = NULL;
+const char * HOSTPTR home_dir = NULL;
+const char * HOSTPTR data_dir = NULL;
+const char * HOSTPTR build_dir = NULL;
+const char * HOSTPTR config_dir = NULL;
+const char * HOSTPTR * HOSTPTR dll_paths = NULL;
+const char * HOSTPTR user_name = NULL;
 static HMODULE ntdll_module;
 static const IMAGE_EXPORT_DIRECTORY *ntdll_exports;
 
@@ -135,18 +151,19 @@ struct file_id
     ino_t ino;
 };
 
+#include "wine/hostptraddrspace_enter.h"
 struct builtin_module
 {
     struct list    entry;
     struct file_id id;
     void          *handle;
-    void          *module;
+    void          * WIN32PTR module;
     void          *unix_handle;
 };
 
 static struct list builtin_modules = LIST_INIT( builtin_modules );
 
-static NTSTATUS add_builtin_module( void *module, void *handle, const struct stat *st )
+static NTSTATUS add_builtin_module( void * WIN32PTR module, void * HOSTPTR handle, const struct stat *st )
 {
     struct builtin_module *builtin;
     if (!(builtin = malloc( sizeof(*builtin) ))) return STATUS_NO_MEMORY;
@@ -162,6 +179,7 @@ static NTSTATUS add_builtin_module( void *module, void *handle, const struct sta
     list_add_tail( &builtin_modules, &builtin->entry );
     return STATUS_SUCCESS;
 }
+#include "wine/hostptraddrspace_exit.h"
 
 /* adjust an array of pointers to make them into RVAs */
 static inline void fixup_rva_ptrs( void *array, BYTE *base, unsigned int count )
@@ -183,6 +201,10 @@ static inline void fixup_rva_dwords( DWORD *ptr, int delta, unsigned int count )
 static inline void fixup_rva_names( UINT_PTR *ptr, int delta )
 {
     for ( ; *ptr; ptr++) if (!(*ptr & IMAGE_ORDINAL_FLAG)) *ptr += delta;
+#ifdef __i386_on_x86_64__
+    ptr++;
+    for ( ; *ptr; ptr++) if (!(*ptr & IMAGE_ORDINAL_FLAG)) *ptr += delta;
+#endif
 }
 
 
@@ -198,6 +220,25 @@ static void fixup_so_resources( IMAGE_RESOURCE_DIRECTORY *dir, BYTE *root, int d
         if (entry->u2.s2.DataIsDirectory) fixup_so_resources( ptr, root, delta );
         else fixup_rva_dwords( &((IMAGE_RESOURCE_DATA_ENTRY *)ptr)->OffsetToData, delta, 1 );
     }
+}
+
+/* These selectors are defined in libport, but since it's statically linked, each
+ * .so has its own copy of the selectors. Set them here.
+ */
+static void fixup_so_32on64_sels( void * HOSTPTR handle, const char * HOSTPTR name )
+{
+#ifdef __i386_on_x86_64__
+    unsigned short * HOSTPTR cs32, * HOSTPTR cs64, * HOSTPTR ds32;
+    cs32 = dlsym( handle, "wine_32on64_cs32" );
+    cs64 = dlsym( handle, "wine_32on64_cs64" );
+    ds32 = dlsym( handle, "wine_32on64_ds32" );
+
+    if (!cs32 || !cs64 || !ds32)
+        WARN( "at least one of cs32/cs64/ds32 is missing from %s\n", debugstr_a(name) );
+    if (cs32) *cs32 = wine_32on64_cs32;
+    if (cs64) *cs64 = wine_32on64_cs64;
+    if (ds32) *ds32 = wine_32on64_ds32;
+#endif
 }
 
 /* die on a fatal error; use only during initialization */
@@ -235,9 +276,9 @@ static void set_max_limit( int limit )
 }
 
 /* canonicalize path and return its directory name */
-static char *realpath_dirname( const char *name )
+static char * HOSTPTR realpath_dirname( const char * HOSTPTR name )
 {
-    char *p, *fullpath = realpath( name, NULL );
+    char * HOSTPTR p, * HOSTPTR fullpath = realpath( name, NULL );
 
     if (fullpath)
     {
@@ -249,11 +290,11 @@ static char *realpath_dirname( const char *name )
 }
 
 /* if string ends with tail, remove it */
-static char *remove_tail( const char *str, const char *tail )
+static char * HOSTPTR remove_tail( const char * HOSTPTR str, const char *tail )
 {
     size_t len = strlen( str );
     size_t tail_len = strlen( tail );
-    char *ret;
+    char * HOSTPTR ret;
 
     if (len < tail_len) return NULL;
     if (strcmp( str + len - tail_len, tail )) return NULL;
@@ -264,10 +305,10 @@ static char *remove_tail( const char *str, const char *tail )
 }
 
 /* build a path from the specified dir and name */
-static char *build_path( const char *dir, const char *name )
+static char * HOSTPTR build_path( const char * HOSTPTR dir, const char * HOSTPTR name )
 {
     size_t len = strlen( dir );
-    char *ret = malloc( len + strlen( name ) + 2 );
+    char * HOSTPTR ret = malloc( len + strlen( name ) + 2 );
 
     memcpy( ret, dir, len );
     if (len && ret[len - 1] != '/') ret[len++] = '/';
@@ -277,7 +318,7 @@ static char *build_path( const char *dir, const char *name )
 
 static void set_dll_path(void)
 {
-    char *p, *path = getenv( "WINEDLLPATH" );
+    char * HOSTPTR p, * HOSTPTR path = getenv( "WINEDLLPATH" );
     int i, count = 0;
 
     if (path) for (p = path, count = 1; *p; p++) if (*p == ':') count++;
@@ -301,9 +342,9 @@ static void set_dll_path(void)
 
 static void set_home_dir(void)
 {
-    const char *home = getenv( "HOME" );
-    const char *name = getenv( "USER" );
-    const char *p;
+    const char * HOSTPTR home = getenv( "HOME" );
+    const char * HOSTPTR name = getenv( "USER" );
+    const char * HOSTPTR p;
 
     if (!home || !name)
     {
@@ -324,8 +365,8 @@ static void set_home_dir(void)
 
 static void set_config_dir(void)
 {
-    char *p, *dir;
-    const char *prefix = getenv( "WINEPREFIX" );
+    char * HOSTPTR p, * HOSTPTR dir;
+    const char * HOSTPTR prefix = getenv( "WINEPREFIX" );
 
     if (prefix)
     {
@@ -342,7 +383,7 @@ static void set_config_dir(void)
     }
 }
 
-static void init_paths( char *argv[] )
+static void init_paths( char * HOSTPTR * HOSTPTR argv )
 {
     Dl_info info;
 
@@ -369,6 +410,38 @@ static void init_paths( char *argv[] )
     set_config_dir();
 }
 
+#ifdef __i386_on_x86_64__
+static pthread_once_t init_once = PTHREAD_ONCE_INIT;
+static char wine_version[128];
+static char wine_build_id[128];
+
+/* Initialize string buffers for 32on64 mode */
+static void init_strings(void)
+{
+    extern const char wine_build[];
+    strcpy(wine_version, PACKAGE_VERSION);
+    strcpy(wine_build_id, wine_build);
+}
+
+/*********************************************************************
+ *                  wine_get_version   (NTDLL.@)
+ */
+const char * CDECL wine_get_version(void)
+{
+    pthread_once(&init_once, init_strings);
+    return wine_version;
+}
+
+/*********************************************************************
+ *                  wine_get_build_id   (NTDLL.@)
+ */
+const char * CDECL wine_get_build_id(void)
+{
+    pthread_once(&init_once, init_strings);
+    return wine_build_id;
+}
+
+#else
 
 /*********************************************************************
  *                  wine_get_version
@@ -377,7 +450,6 @@ const char * CDECL wine_get_version(void)
 {
     return PACKAGE_VERSION;
 }
-
 
 /*********************************************************************
  *                  wine_get_build_id
@@ -388,6 +460,7 @@ const char * CDECL wine_get_build_id(void)
     return wine_build;
 }
 
+#endif
 
 /*********************************************************************
  *                  wine_get_host_version
@@ -411,18 +484,45 @@ void CDECL wine_get_host_version( const char **sysname, const char **release )
 #endif
 }
 
+/* return whether the OS needs to use a 64-bit process to emulate 32-bit Wine */
+int wine_needs_32on64(void)
+{
+#ifdef __APPLE__
+    static int result = -1;
+    struct utsname name;
+    unsigned major, minor;
 
-static void preloader_exec( char **argv )
+    if (result == -1)
+    {
+        if (getenv("WINE_USE_32ON64"))
+            result = 1;
+        else
+        {
+            result = (uname(&name) == 0 &&
+                      sscanf(name.release, "%u.%u", &major, &minor) == 2 &&
+                      major >= 19);
+        }
+    }
+
+    return result;
+#else
+    return 0;
+#endif
+}
+
+
+static void preloader_exec( char * HOSTPTR * HOSTPTR argv )
 {
     if (use_preloader)
     {
         static const char *preloader = "wine-preloader";
-        char *p;
+        char * HOSTPTR p;
 
         if (!(p = strrchr( argv[1], '/' ))) p = argv[1];
         else p++;
 
-        if (strlen(p) > 2 && !strcmp( p + strlen(p) - 2, "64" )) preloader = "wine64-preloader";
+        if (strlen(p) > 6 && !strcmp( p + strlen(p) - 6, "32on64" )) preloader = "wine32on64-preloader";
+        else if (strlen(p) > 2 && !strcmp( p + strlen(p) - 2, "64" )) preloader = "wine64-preloader";
         argv[0] = malloc( p - argv[1] + strlen(preloader) + 1 );
         memcpy( argv[0], argv[1], p - argv[1] );
         strcpy( argv[0] + (p - argv[1]), preloader );
@@ -442,13 +542,13 @@ static void preloader_exec( char **argv )
     execv( argv[1], argv + 1 );
 }
 
-static NTSTATUS loader_exec( const char *loader, char **argv, client_cpu_t cpu )
+static NTSTATUS loader_exec( const char * HOSTPTR loader, char * HOSTPTR * HOSTPTR argv, client_cpu_t cpu )
 {
-    char *p, *path;
+    char * HOSTPTR p, * HOSTPTR path;
 
     if (build_dir)
     {
-        argv[1] = build_path( build_dir, (cpu == CPU_x86_64) ? "loader/wine64" : "loader/wine" );
+        argv[1] = build_path( build_dir, (cpu == CPU_x86_64) ? "loader/wine64" : wine_needs_32on64() ? "loader/wine32on64" : "loader/wine" );
         preloader_exec( argv );
         return STATUS_INVALID_IMAGE_FORMAT;
     }
@@ -481,39 +581,43 @@ static NTSTATUS loader_exec( const char *loader, char **argv, client_cpu_t cpu )
  *
  * argv[0] and argv[1] must be reserved for the preloader and loader respectively.
  */
-NTSTATUS exec_wineloader( char **argv, int socketfd, const pe_image_info_t *pe_info )
+NTSTATUS exec_wineloader( char * HOSTPTR * HOSTPTR argv, int socketfd, const pe_image_info_t *pe_info )
 {
     int is_child_64bit = (pe_info->cpu == CPU_x86_64 || pe_info->cpu == CPU_ARM64);
     ULONGLONG res_start = pe_info->base;
     ULONGLONG res_end = pe_info->base + pe_info->map_size;
-    const char *loader = argv0;
-    const char *loader_env = getenv( "WINELOADER" );
+    const char * HOSTPTR loader = argv0;
+    const char * HOSTPTR loader_env = getenv( "WINELOADER" );
     char preloader_reserve[64], socket_env[64];
 
-    if (!is_win64 ^ !is_child_64bit)
+    if (!wine_is_64bit() ^ !is_child_64bit)
     {
         /* remap WINELOADER to the alternate 32/64-bit version if necessary */
         if (loader_env)
         {
             int len = strlen( loader_env );
-            char *env = malloc( sizeof("WINELOADER=") + len + 2 );
+            char * HOSTPTR env = malloc( sizeof("WINELOADER=") + len + 6 );
 
             if (!env) return STATUS_NO_MEMORY;
             strcpy( env, "WINELOADER=" );
             strcat( env, loader_env );
+            len += sizeof("WINELOADER=") - 1;
             if (is_child_64bit)
             {
+                if (!strcmp( env + len - 6, "32on64" )) env[len - 6] = 0;
                 strcat( env, "64" );
             }
             else
             {
-                len += sizeof("WINELOADER=") - 1;
                 if (!strcmp( env + len - 2, "64" )) env[len - 2] = 0;
+                if (wine_needs_32on64())
+                    strcat( env, "32on64" );
+
             }
             loader = env;
             putenv( env );
         }
-        else loader = is_child_64bit ? "wine64" : "wine";
+        else loader = is_child_64bit ? "wine64" : wine_needs_32on64() ? "wine32on64" : "wine";
     }
 
     signal( SIGPIPE, SIG_DFL );
@@ -534,15 +638,15 @@ NTSTATUS exec_wineloader( char **argv, int socketfd, const pe_image_info_t *pe_i
  *
  * Exec a new wine server.
  */
-static void exec_wineserver( char **argv )
+static void exec_wineserver( char * HOSTPTR * HOSTPTR argv )
 {
-    char *path;
+    char * HOSTPTR path;
 
     if (build_dir)
     {
         if (!is_win64)  /* look for 64-bit server */
         {
-            char *loader = realpath_dirname( build_path( build_dir, "loader/wine64" ));
+            char * HOSTPTR loader = realpath_dirname( build_path( build_dir, "loader/wine64" ));
             if (loader)
             {
                 argv[0] = build_path( loader, "../server/wineserver" );
@@ -582,7 +686,7 @@ static void exec_wineserver( char **argv )
 void start_server( BOOL debug )
 {
     static BOOL started;  /* we only try once */
-    char *argv[3];
+    char * HOSTPTR argv[3];
     static char debug_flag[] = "-d";
 
     if (!started)
@@ -743,7 +847,11 @@ static NTSTATUS map_so_dll( const IMAGE_NT_HEADERS *nt_descr, HMODULE module )
         fixup_rva_dwords( &exports->AddressOfNames, delta, 1 );
         fixup_rva_dwords( &exports->AddressOfNameOrdinals, delta, 1 );
         fixup_rva_dwords( (DWORD *)(addr + exports->AddressOfNames), delta, exports->NumberOfNames );
+#ifdef __i386_on_x86_64__
+        fixup_rva_ptrs( addr + exports->AddressOfFunctions, addr, exports->NumberOfFunctions * 2 );
+#else
         fixup_rva_ptrs( addr + exports->AddressOfFunctions, addr, exports->NumberOfFunctions );
+#endif
     }
     return STATUS_SUCCESS;
 }
@@ -809,7 +917,7 @@ static inline void *get_rva( void *module, ULONG_PTR addr )
     return (BYTE *)module + addr;
 }
 
-static NTSTATUS fixup_ntdll_imports( const char *name, HMODULE module )
+static NTSTATUS fixup_ntdll_imports( const char * HOSTPTR name, HMODULE module )
 {
     const IMAGE_NT_HEADERS *nt;
     const IMAGE_IMPORT_DESCRIPTOR *descr;
@@ -849,11 +957,45 @@ static NTSTATUS fixup_ntdll_imports( const char *name, HMODULE module )
             {
                 IMAGE_IMPORT_BY_NAME *pe_name = get_rva( module, import_list->u1.AddressOfData );
                 thunk_list->u1.Function = find_pe_export( ntdll_module, ntdll_exports, pe_name );
+#ifdef __i386_on_x86_64__
+                if ((!thunk_list->u1.Function) && !strcmp( (const char*)pe_name->Name, "__wine_dbg_header_HOSTPTR" ))
+                    thunk_list->u1.Function = TRUNCCAST(ULONG_PTR, dlsym( RTLD_SELF_HOSTPTR, "wine_thunk___wine_dbg_header_HOSTPTR" ));
+#endif
                 if (!thunk_list->u1.Function) ERR( "%s: ntdll.%s not found\n", debugstr_a(name), pe_name->Name );
             }
             import_list++;
             thunk_list++;
         }
+
+#ifdef __i386_on_x86_64__
+        import_list++;
+        thunk_list++;
+        while (import_list->u1.Ordinal)
+        {
+            if (IMAGE_SNAP_BY_ORDINAL( import_list->u1.Ordinal ))
+            {
+                int ordinal = IMAGE_ORDINAL( import_list->u1.Ordinal ) - ntdll_exports->Base;
+                /*
+                thunk_list->u1.Function = find_ordinal_export( ntdll_module, ntdll_exports, ordinal, TRUE );
+                if (!thunk_list->u1.Function) ERR( "%s: ntdll.%u not found\n", debugstr_a(name), ordinal );
+                */
+                ERR( "%s: \"Extra\"/64-bit import by ordinal not implemented (ntdll.%u)\n", debugstr_a(name), ordinal );
+            }
+            else  /* import by name */
+            {
+                /* Resolve these imports directly from the Unix side of ntdll.
+                 * Now that ntdll is PE(+Unix) and not a hybrid DLL, the PE export table isn't useful.
+                 * 32on64 FIXME: this works, but is pretty messy.
+                 */
+                IMAGE_IMPORT_BY_NAME *pe_name = get_rva( module, import_list->u1.AddressOfData );
+                /*thunk_list->u1.Function = find_pe_export( ntdll_module, ntdll_exports, pe_name, TRUE );*/
+                thunk_list->u1.Function = TRUNCCAST(ULONG_PTR, dlsym( RTLD_SELF_HOSTPTR, (char *)pe_name->Name ));
+                if (!thunk_list->u1.Function) TRACE( "%s: ntdll.%s not found from Unix side of ntdll\n", debugstr_a(name), pe_name->Name );
+            }
+            import_list++;
+            thunk_list++;
+        }
+#endif
     }
     return STATUS_SUCCESS;
 }
@@ -873,16 +1015,30 @@ static void load_ntdll_functions( HMODULE module )
     GET_FUNC( KiRaiseUserExceptionDispatcher );
     GET_FUNC( KiUserExceptionDispatcher );
     GET_FUNC( KiUserApcDispatcher );
+#ifndef __i386_on_x86_64__
     GET_FUNC( LdrInitializeThunk );
+#endif
     GET_FUNC( RtlUserThreadStart );
+    GET_FUNC( RtlFindClearBitsAndSet );
+#ifdef __i386_on_x86_64__
+    GET_FUNC( RtlAllocateHeap );
+    GET_FUNC( RtlFreeHeap );
+#endif
     GET_FUNC( __wine_set_unix_funcs );
 #undef GET_FUNC
+
+#ifdef __i386_on_x86_64__
+    pLdrInitializeThunk = (void *)LdrInitializeThunk_stdcall64;
+    if (!(pLdrInitializeThunk_stdcall32 = (void *)find_named_export( module, ntdll_exports, "LdrInitializeThunk" ))) \
+        ERR( "%s not found\n", "LdrInitializeThunk" );
+#endif
+
 #define SET_PTR(name,val) \
     if ((ptr = (void *)find_named_export( module, ntdll_exports, #name ))) *ptr = val; \
     else ERR( "%s not found\n", #name )
 
-    SET_PTR( __wine_syscall_dispatcher, __wine_syscall_dispatcher );
-#ifdef __i386__
+    SET_PTR( __wine_syscall_dispatcher, syscall_dispatcher );
+#if defined(__i386__) || defined(__i386_on_x86_64__)
     SET_PTR( __wine_ldt_copy, &__wine_ldt_copy );
 #endif
 #undef SET_PTR
@@ -915,14 +1071,15 @@ static void load_libwine(void)
 #define LIBWINE "libwine.so.1"
 #endif
     typedef void (*load_dll_callback_t)( void *, const char * );
-    static void (*p_wine_dll_set_callback)( load_dll_callback_t load );
-    static int *p___wine_main_argc;
-    static char ***p___wine_main_argv;
-    static char ***p___wine_main_environ;
-    static WCHAR ***p___wine_main_wargv;
+    static void (* HOSTPTR p_wine_dll_set_callback)( load_dll_callback_t load );
+    /* 32on64 FIXME: Some of those may need to be declared host or win32 ptr */
+    static int * HOSTPTR p___wine_main_argc;
+    static char * HOSTPTR * HOSTPTR * HOSTPTR p___wine_main_argv;
+    static char * HOSTPTR * HOSTPTR * HOSTPTR p___wine_main_environ;
+    static WCHAR * HOSTPTR * HOSTPTR * HOSTPTR p___wine_main_wargv;
 
-    char *path;
-    void *handle;
+    char * HOSTPTR path;
+    void * HOSTPTR handle;
 
     if (build_dir) path = build_path( build_dir, "libs/wine/" LIBWINE );
     else path = build_path( dll_dir, "../" LIBWINE );
@@ -948,10 +1105,10 @@ static void load_libwine(void)
 /***********************************************************************
  *           dlopen_dll
  */
-static NTSTATUS dlopen_dll( const char *so_name, void **ret_module )
+static NTSTATUS dlopen_dll( const char * HOSTPTR so_name, void **ret_module )
 {
     struct builtin_module *builtin;
-    void *module, *handle;
+    void *module, * HOSTPTR handle;
     const IMAGE_NT_HEADERS *nt;
 
     callback_module = (void *)1;
@@ -961,6 +1118,7 @@ static NTSTATUS dlopen_dll( const char *so_name, void **ret_module )
         WARN( "failed to load .so lib %s: %s\n", debugstr_a(so_name), dlerror() );
         return STATUS_INVALID_IMAGE_FORMAT;
     }
+    fixup_so_32on64_sels( handle, so_name );
     if (callback_module != (void *)1)  /* callback was called */
     {
         if (!callback_module) return STATUS_NO_MEMORY;
@@ -969,7 +1127,8 @@ static NTSTATUS dlopen_dll( const char *so_name, void **ret_module )
         LIST_FOR_EACH_ENTRY( builtin, &builtin_modules, struct builtin_module, entry )
             if (builtin->module == module) goto already_loaded;
     }
-    else if ((nt = dlsym( handle, "__wine_spec_nt_header" )))
+    /* 32on64 FIXME: this ADDRSPACECAST is probably not right */
+    else if ((nt = ADDRSPACECAST(const IMAGE_NT_HEADERS *, dlsym( handle, "__wine_spec_nt_header" ))))
     {
         module = (HMODULE)((nt->OptionalHeader.ImageBase + 0xffff) & ~0xffff);
         LIST_FOR_EACH_ENTRY( builtin, &builtin_modules, struct builtin_module, entry )
@@ -1007,17 +1166,23 @@ already_loaded:
 /***********************************************************************
  *           dlopen_unix_dll
  */
-static NTSTATUS dlopen_unix_dll( void *module, const char *name, void **unix_entry )
+static NTSTATUS dlopen_unix_dll( void *module, const char * HOSTPTR name, void **unix_entry )
 {
     struct builtin_module *builtin;
-    void *unix_module, *handle, *entry;
+    void *unix_module, * HOSTPTR handle, *entry;
     const IMAGE_NT_HEADERS *nt;
     NTSTATUS status = STATUS_INVALID_IMAGE_FORMAT;
 
     handle = dlopen( name, RTLD_NOW );
     if (!handle) return STATUS_DLL_NOT_FOUND;
-    if (!(nt = dlsym( handle, "__wine_spec_nt_header" ))) goto done;
-    if (!(entry = dlsym( handle, "__wine_init_unix_lib" ))) goto done;
+    /* 32on64 FIXME: these ADDRSPACECASTs are probably not right */
+    if (!(nt = ADDRSPACECAST(const IMAGE_NT_HEADERS *, dlsym( handle, "__wine_spec_nt_header" )))) goto done;
+#ifdef __i386_on_x86_64__
+    if (!(entry = ADDRSPACECAST(void *, dlsym( handle, "wine_thunk___wine_init_unix_lib" )))) goto done;
+#else
+    if (!(entry = ADDRSPACECAST(void *, dlsym( handle, "__wine_init_unix_lib" )))) goto done;
+#endif
+    fixup_so_32on64_sels( handle, name );
 
     unix_module = (HMODULE)((nt->OptionalHeader.ImageBase + 0xffff) & ~0xffff);
     LIST_FOR_EACH_ENTRY( builtin, &builtin_modules, struct builtin_module, entry )
@@ -1057,12 +1222,17 @@ done:
 /***********************************************************************
  *           load_so_dll
  */
-static NTSTATUS CDECL load_so_dll( UNICODE_STRING *nt_name, void **module )
+static NTSTATUS CDECL load_so_dll( UNICODE_STRING *nt_name, void **module, BOOL *is_hybrid )
 {
     static const WCHAR soW[] = {'.','s','o',0};
-    char *unix_name;
+    char * HOSTPTR unix_name;
     NTSTATUS status;
     DWORD len;
+
+#ifdef __i386_on_x86_64__
+    if (is_hybrid)
+        *is_hybrid = TRUE;
+#endif
 
     if (nt_to_unix_file_name( nt_name, &unix_name, FILE_OPEN )) return STATUS_DLL_NOT_FOUND;
 
@@ -1079,7 +1249,7 @@ static NTSTATUS CDECL load_so_dll( UNICODE_STRING *nt_name, void **module )
 /* check a PE library architecture */
 static BOOL is_valid_binary( HMODULE module, const SECTION_IMAGE_INFORMATION *info )
 {
-#ifdef __i386__
+#if defined(__i386__) || defined(__i386_on_x86_64__)
     return info->Machine == IMAGE_FILE_MACHINE_I386;
 #elif defined(__arm__)
     return info->Machine == IMAGE_FILE_MACHINE_ARM ||
@@ -1130,7 +1300,7 @@ static int check_library_arch( int fd )
 #endif
 }
 
-static inline char *prepend( char *buffer, const char *str, size_t len )
+static inline char * HOSTPTR prepend( char * HOSTPTR buffer, const char * HOSTPTR str, size_t len )
 {
     return memcpy( buffer - len, str, len );
 }
@@ -1140,7 +1310,7 @@ static inline char *prepend( char *buffer, const char *str, size_t len )
  *
  * Open a file for a new dll. Helper for find_dll_file.
  */
-static NTSTATUS open_dll_file( const char *name, void **module, SECTION_IMAGE_INFORMATION *image_info )
+static NTSTATUS open_dll_file( const char * HOSTPTR name, void **module, SECTION_IMAGE_INFORMATION *image_info )
 {
     struct builtin_module *builtin;
     OBJECT_ATTRIBUTES attr = { sizeof(attr) };
@@ -1225,11 +1395,13 @@ static NTSTATUS open_dll_file( const char *name, void **module, SECTION_IMAGE_IN
 /***********************************************************************
  *           open_builtin_file
  */
-static NTSTATUS open_builtin_file( char *name, void **module, SECTION_IMAGE_INFORMATION *image_info )
+static NTSTATUS open_builtin_file( char * HOSTPTR name, void **module, SECTION_IMAGE_INFORMATION *image_info, BOOL *is_hybrid )
 {
     NTSTATUS status;
     int fd;
 
+    if (is_hybrid)
+        *is_hybrid = FALSE;
     status = open_dll_file( name, module, image_info );
     if (status != STATUS_DLL_NOT_FOUND) return status;
 
@@ -1246,6 +1418,10 @@ static NTSTATUS open_builtin_file( char *name, void **module, SECTION_IMAGE_INFO
             {
                 memset( image_info, 0, sizeof(*image_info) );
                 image_info->u.ImageFlags = IMAGE_FLAGS_WineBuiltin;
+#ifdef __i386_on_x86_64__
+                if (is_hybrid)
+                    *is_hybrid = TRUE;
+#endif
                 status = STATUS_SUCCESS;
             }
             else
@@ -1265,10 +1441,10 @@ static NTSTATUS open_builtin_file( char *name, void **module, SECTION_IMAGE_INFO
  *           load_builtin_dll
  */
 static NTSTATUS CDECL load_builtin_dll( const WCHAR *name, void **module, void **unix_entry,
-                                        SECTION_IMAGE_INFORMATION *image_info )
+                                        SECTION_IMAGE_INFORMATION *image_info, BOOL *is_hybrid )
 {
     unsigned int i, pos, len, namelen, maxlen = 0;
-    char *ptr = NULL, *file, *ext = NULL;
+    char * HOSTPTR ptr = NULL, * HOSTPTR file, * HOSTPTR ext = NULL;
     NTSTATUS status = STATUS_DLL_NOT_FOUND;
     BOOL found_image = FALSE;
 
@@ -1299,7 +1475,7 @@ static NTSTATUS CDECL load_builtin_dll( const WCHAR *name, void **module, void *
         ptr = prepend( ptr, ptr, namelen );
         ptr = prepend( ptr, "/dlls", sizeof("/dlls") - 1 );
         ptr = prepend( ptr, build_dir, strlen(build_dir) );
-        status = open_builtin_file( ptr, module, image_info );
+        status = open_builtin_file( ptr, module, image_info, is_hybrid );
         if (status != STATUS_DLL_NOT_FOUND) goto done;
 
         /* now as a program */
@@ -1310,7 +1486,7 @@ static NTSTATUS CDECL load_builtin_dll( const WCHAR *name, void **module, void *
         ptr = prepend( ptr, ptr, namelen );
         ptr = prepend( ptr, "/programs", sizeof("/programs") - 1 );
         ptr = prepend( ptr, build_dir, strlen(build_dir) );
-        status = open_builtin_file( ptr, module, image_info );
+        status = open_builtin_file( ptr, module, image_info, is_hybrid );
         if (status != STATUS_DLL_NOT_FOUND) goto done;
     }
 
@@ -1318,7 +1494,7 @@ static NTSTATUS CDECL load_builtin_dll( const WCHAR *name, void **module, void *
     {
         file[pos + len + 1] = 0;
         ptr = prepend( file + pos, dll_paths[i], strlen(dll_paths[i]) );
-        status = open_builtin_file( ptr, module, image_info );
+        status = open_builtin_file( ptr, module, image_info, is_hybrid );
         if (status == STATUS_IMAGE_MACHINE_TYPE_MISMATCH) found_image = TRUE;
         else if (status != STATUS_DLL_NOT_FOUND) goto done;
     }
@@ -1450,10 +1626,10 @@ static void load_ntdll(void)
     NTSTATUS status;
     SECTION_IMAGE_INFORMATION info;
     void *module = NULL;
-    char *name = build_path( dll_dir, "ntdll.dll.so" );
+    char * HOSTPTR name = build_path( dll_dir, "ntdll.dll.so" );
 
     name[strlen(name) - 3] = 0;  /* remove .so */
-    status = open_builtin_file( name, &module, &info );
+    status = open_builtin_file( name, &module, &info, NULL );
     if (status) fatal_error( "failed to load %s error %x\n", name, status );
     free( name );
     load_ntdll_functions( module );
@@ -1464,7 +1640,7 @@ static void load_ntdll(void)
 /***********************************************************************
  *           get_image_address
  */
-ULONG_PTR get_image_address(void)
+ULONG_HOSTPTR get_image_address(void)
 {
 #ifdef HAVE_GETAUXVAL
     ULONG_PTR size, num, phdr_addr = getauxval( AT_PHDR );
@@ -1484,9 +1660,28 @@ ULONG_PTR get_image_address(void)
     mach_msg_type_number_t size = TASK_DYLD_INFO_COUNT;
 
     if (task_info(mach_task_self(), TASK_DYLD_INFO, (task_info_t)&dyld_info, &size) == KERN_SUCCESS)
-        return dyld_info.all_image_info_addr;
+    {
+        ULONG_HOSTPTR ret = dyld_info.all_image_info_addr;
+#ifdef __i386_on_x86_64__
+        if (ret != dyld_info.all_image_info_addr)
+        {
+            ERR("dyld image info is above 4GB limit for 32-bit-on-64-bit process\n");
+            ret = 0;
+        }
+#endif
+        return ret;
+    }
 #endif
     return 0;
+}
+
+static void * CDECL dlsym_unix_ntdll( const char *func )
+{
+#ifdef __i386_on_x86_64__
+    return TRUNCCAST(void *, dlsym( RTLD_SELF_HOSTPTR, func ));
+#else
+    return NULL;
+#endif
 }
 
 
@@ -1508,7 +1703,9 @@ static double CDECL ntdll_tan( double d )   { return tan( d ); }
  */
 static struct unix_funcs unix_funcs =
 {
+#ifdef __aarch64__
     NtCurrentTeb,
+#endif
     DbgUiIssueRemoteBreakin,
     RtlGetSystemTimePrecise,
     RtlWaitOnAddress,
@@ -1549,12 +1746,56 @@ static struct unix_funcs unix_funcs =
     unload_builtin_dll,
     init_builtin_dll,
     unwind_builtin_dll,
+    dlsym_unix_ntdll,
     __wine_dbg_get_channel_flags,
     __wine_dbg_strdup,
     __wine_dbg_output,
     __wine_dbg_header,
 };
 
+
+#if defined(__APPLE__) && defined(__x86_64__) && !defined(__i386_on_x86_64__)
+static __thread struct tm localtime_tls;
+struct tm *my_localtime(const time_t *timep)
+{
+    return localtime_r(timep, &localtime_tls);
+}
+
+static void hook(void *to_hook, const void *replace)
+{
+    size_t offset;
+    int ret;
+
+    struct hooked_function
+    {
+        char jmp[8];
+        const void *dst;
+    } *hooked_function = to_hook;
+    ULONG_PTR intval = (UINT_PTR)to_hook;
+
+    intval -= (intval % 4096);
+    ret = mprotect((void *)intval, 0x2000, PROT_EXEC | PROT_READ | PROT_WRITE);
+
+    /* The offset is from the end of the jmp instruction (6 bytes) to the start of the destination. */
+    offset = offsetof(struct hooked_function, dst) - offsetof(struct hooked_function, jmp) - 0x6;
+
+    /* jmp *(rip + offset) */
+    hooked_function->jmp[0] = 0xff;
+    hooked_function->jmp[1] = 0x25;
+    hooked_function->jmp[2] = offset;
+    hooked_function->jmp[3] = 0x00;
+    hooked_function->jmp[4] = 0x00;
+    hooked_function->jmp[5] = 0x00;
+    /* Filler */
+    hooked_function->jmp[6] = 0xcc;
+    hooked_function->jmp[7] = 0xcc;
+    /* Dest address absolute */
+    hooked_function->dst = replace;
+
+    //size = sizeof(*hooked_function);
+    //NtProtectVirtualMemory(proc, (void **)hooked_function, &size, old_protect, &old_protect);
+}
+#endif
 
 /***********************************************************************
  *           start_main_thread
@@ -1567,25 +1808,49 @@ static void start_main_thread(void)
 
     signal_init_threading();
     signal_alloc_thread( teb );
+#ifdef __i386_on_x86_64__
+    signal_init_32on64_ldt();
+#endif
     signal_init_thread( teb );
     dbg_init();
     server_init_process();
     startup_info_size = server_init_thread( teb->Peb, &suspend );
+    esync_init();
     virtual_map_user_shared_data();
     init_cpu_info();
+    syscall_dispatcher = signal_init_syscalls();
     init_files();
     NtCreateKeyedEvent( &keyed_event, GENERIC_READ | GENERIC_WRITE, NULL, 0 );
     load_ntdll();
     load_libwine();
     status = p__wine_set_unix_funcs( NTDLL_UNIXLIB_VERSION, &unix_funcs );
     if (status) exec_process( status );
+
+#if defined(__APPLE__) && defined(__x86_64__) && !defined(__i386_on_x86_64__)
+    /* Preallocate TlsExpansionSlots for first thread.  Otherwise, kernelbase will
+       allocate it on demand, but won't be able to do the Mac-specific poking to the
+       %gs-relative address. */
+    if (!teb->TlsExpansionSlots)
+        teb->TlsExpansionSlots = RtlAllocateHeap( GetProcessHeap(), HEAP_ZERO_MEMORY,
+                                                  8 * sizeof(teb->Peb->TlsExpansionBitmapBits) * sizeof(void*) );
+    __asm__ volatile ("movq %0,%%gs:%c1"
+                      :
+                      : "r" (teb->TlsExpansionSlots), "n" (FIELD_OFFSET(TEB, TlsExpansionSlots)));
+
+    /* This is necessary because we poke PEB into pthread TLS at offset 0x60. It is normally in use by
+     * localtime(), which is called a lot by system libraries. Make localtime() go away. */
+    hook(localtime, my_localtime);
+
+    while (pRtlFindClearBitsAndSet(teb->Peb->TlsBitmap, 1, 1) != ~0U);
+#endif
+
     server_init_process_done();
 }
 
 #ifdef __ANDROID__
 
 #ifndef WINE_JAVA_CLASS
-#define WINE_JAVA_CLASS "org/winehq/wine/WineActivity"
+#define WINE_JAVA_CLASS "org/winehq/wine/WineDriver"
 #endif
 
 JavaVM *java_vm = NULL;
@@ -1702,7 +1967,7 @@ jint JNI_OnLoad( JavaVM *vm, void *reserved )
 #endif  /* __ANDROID__ */
 
 #ifdef __APPLE__
-static void *apple_wine_thread( void *arg )
+static void * HOSTPTR apple_wine_thread( void * HOSTPTR arg )
 {
     start_main_thread();
     return NULL;
@@ -1716,7 +1981,7 @@ static void *apple_wine_thread( void *arg )
  *
  * Invoked as a CFRunLoopSource perform callback.
  */
-static void apple_create_wine_thread( void *arg )
+static void apple_create_wine_thread( void * HOSTPTR arg )
 {
     pthread_t thread;
     pthread_attr_t attr;
@@ -1759,11 +2024,13 @@ static void apple_main_thread(void)
      * preferable for the Wine initialization to not proceed until we know
      * the run loop is running.  So, we signal our source immediately after
      * adding it and have its callback spin off the Wine thread. */
+#ifndef __i386_on_x86_64__
     source_context.perform = apple_create_wine_thread;
     source = CFRunLoopSourceCreate( NULL, 0, &source_context );
     CFRunLoopAddSource( CFRunLoopGetCurrent(), source, kCFRunLoopCommonModes );
     CFRunLoopSourceSignal( source );
     CFRelease( source );
+#endif
     CFRunLoopRun(); /* Should never return, except on error. */
 }
 #endif  /* __APPLE__ */
@@ -1773,7 +2040,7 @@ static void apple_main_thread(void)
 
 static int pre_exec(void)
 {
-#if defined(__i386__) || defined(__x86_64__)
+#if defined(__i386__) || defined(__x86_64__) || defined(__i386_on_x86_64__)
     return 1;  /* we have a preloader */
 #else
     return 0;  /* no exec needed */
@@ -1805,14 +2072,14 @@ static int pre_exec(void)
 #endif
 }
 
-#elif defined(__linux__) && (defined(__x86_64__) || defined(__aarch64__))
+#elif defined(__linux__) && (defined(__x86_64__) || defined(__i386_on_x86_64__) || defined(__aarch64__))
 
 static int pre_exec(void)
 {
     return 1;  /* we have a preloader on x86-64/arm64 */
 }
 
-#elif defined(__APPLE__) && (defined(__i386__) || defined(__x86_64__))
+#elif defined(__APPLE__) && (defined(__i386__) || defined(__x86_64__) || defined(__i386_on_x86_64__))
 
 static int pre_exec(void)
 {
@@ -1846,7 +2113,7 @@ static int pre_exec(void)
  *
  * Check if command line is one that needs to be handled specially.
  */
-static void check_command_line( int argc, char *argv[] )
+static void check_command_line( int argc, char * HOSTPTR * HOSTPTR argv )
 {
     static const char usage[] =
         "Usage: wine PROGRAM [ARGUMENTS...]   Run the specified program\n"
@@ -1876,7 +2143,11 @@ static void check_command_line( int argc, char *argv[] )
  *
  * Main entry point called by the wine loader.
  */
-void __wine_main( int argc, char *argv[], char *envp[] )
+#ifdef __i386_on_x86_64__
+void __wine_main_real( int argc, char * HOSTPTR * HOSTPTR argv, char * HOSTPTR * HOSTPTR envp )
+#else
+void __wine_main( int argc, char * HOSTPTR * HOSTPTR argv, char * HOSTPTR * HOSTPTR envp )
+#endif
 {
     init_paths( argv );
 
@@ -1886,7 +2157,7 @@ void __wine_main( int argc, char *argv[], char *envp[] )
         if (pre_exec())
         {
             static char noexec[] = "WINELOADERNOEXEC=1";
-            char **new_argv = malloc( (argc + 2) * sizeof(*argv) );
+            char * HOSTPTR * HOSTPTR new_argv = malloc( (argc + 2) * sizeof(*argv) );
 
             memcpy( new_argv + 1, argv, (argc + 1) * sizeof(*argv) );
             putenv( noexec );
@@ -1905,8 +2176,59 @@ void __wine_main( int argc, char *argv[], char *envp[] )
     virtual_init();
     init_environment( argc, argv, envp );
 
-#ifdef __APPLE__
+#if defined(__APPLE__) && !defined(__i386_on_x86_64__)
     apple_main_thread();
 #endif
     start_main_thread();
 }
+
+#ifdef __i386_on_x86_64__
+static struct args
+{
+    int argc;
+    char * HOSTPTR * HOSTPTR argv;
+    char * HOSTPTR * HOSTPTR envp;
+} args;
+
+static void * HOSTPTR __wine_main_call_real( void * HOSTPTR arg )
+{
+    __wine_main_real( args.argc, args.argv, args.envp );
+    return NULL;
+}
+
+/* 32on64 FIXME: __wine_main is called from the real main(), which has a 64-bit stack.
+ * All of ntdll is built with 32-bit stacks though.
+ * As a crazy workaround, create a thread with a 32-bit-safe stack (while avoiding passing
+ * the address of any stack-allocated objects to any functions), and call the normal
+ * __wine_main() and start_main_thread() from there.
+ *
+ * Biggest FIXME here is that we should probably not let mmap() pick the address.
+ */
+void __wine_main( int argc, char * HOSTPTR * HOSTPTR argv, char * HOSTPTR * HOSTPTR envp )
+{
+    static pthread_t thread;
+    static pthread_attr_t attr;
+    static size_t stacksize;
+    void * HOSTPTR stack;
+
+    pthread_attr_init(&attr);
+    pthread_attr_getstacksize(&attr, &stacksize);
+
+    stack = mmap(NULL, stacksize, PROT_READ | PROT_WRITE, MAP_ANON | 0x8000 /*MAP_32BIT*/ | MAP_PRIVATE, 0, 0);
+
+    pthread_attr_setstack(&attr, stack, stacksize);
+
+    args.argc = argc;
+    args.argv = argv;
+    args.envp = envp;
+    pthread_create(&thread, &attr, __wine_main_call_real, NULL);
+
+    apple_main_thread();
+
+    /* If we're at this point, __wine_main() was not called from the main thread
+     * (which happens when running in a Menu Helper). No need to run a runloop here,
+     * just wait for the wine thread to exit.
+     */
+    pthread_join(thread, NULL);
+}
+#endif

@@ -20,6 +20,8 @@
 #ifndef __WINE_TIME_H
 #define __WINE_TIME_H
 
+#include "wine/winheader_enter.h"
+
 #include <corecrt_wtime.h>
 
 #include <pshpack8.h>
@@ -37,7 +39,7 @@ typedef __msvcrt_long clock_t;
 extern "C" {
 #endif
 
-#ifdef __i386__
+#if defined(__i386__) || defined(__i386_on_x86_64__)
 #define _daylight (*__p__daylight())
 #define _dstbias (*__p__dstbias())
 #define _timezone (*__p__timezone())
@@ -110,5 +112,7 @@ static inline time_t time(time_t *t) { return _time32(t); }
 #endif
 
 #include <poppack.h>
+
+#include "wine/winheader_exit.h"
 
 #endif /* __WINE_TIME_H */

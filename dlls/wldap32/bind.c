@@ -181,10 +181,10 @@ exit:
 
 #ifdef HAVE_LDAP
 
-static int sasl_interact( LDAP *ld, unsigned flags, void *defaults, void *interact )
+static int sasl_interact( LDAP * HOSTPTR ld, unsigned flags, void * HOSTPTR defaults, void * HOSTPTR interact )
 {
 #ifdef HAVE_SASL_SASL_H
-    SEC_WINNT_AUTH_IDENTITY_A *id = defaults;
+    SEC_WINNT_AUTH_IDENTITY_A * HOSTPTR id = defaults;
     sasl_interact_t *sasl = interact;
 
     TRACE( "%p,%08x,%p,%p\n", ld, flags, defaults, interact );
@@ -449,7 +449,7 @@ exit:
  */
 ULONG CDECL ldap_sasl_bind_sA( WLDAP32_LDAP *ld, const PCHAR dn,
     const PCHAR mechanism, const BERVAL *cred, PLDAPControlA *serverctrls,
-    PLDAPControlA *clientctrls, PBERVAL *serverdata )
+    PLDAPControlA *clientctrls, BERVAL **serverdata )
 {
     ULONG ret = WLDAP32_LDAP_NOT_SUPPORTED;
 #ifdef HAVE_LDAP
@@ -522,6 +522,7 @@ ULONG CDECL ldap_sasl_bind_sW( WLDAP32_LDAP *ld, const PWCHAR dn,
     char *dnU, *mechanismU = NULL;
     LDAPControl **serverctrlsU = NULL, **clientctrlsU = NULL;
     struct berval credU;
+    struct berval *bvret = NULL;
 
     ret = WLDAP32_LDAP_NO_MEMORY;
 
@@ -550,7 +551,8 @@ ULONG CDECL ldap_sasl_bind_sW( WLDAP32_LDAP *ld, const PWCHAR dn,
     credU.bv_val = cred->bv_val;
 
     ret = map_error( ldap_sasl_bind_s( ld->ld, dnU, mechanismU, &credU,
-                                       serverctrlsU, clientctrlsU, (struct berval **)serverdata ));
+                                       serverctrlsU, clientctrlsU, &bvret ));
+    ret = bvconvert_and_free( ret, bvret, serverdata );
 
 exit:
     strfreeU( dnU );

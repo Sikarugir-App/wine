@@ -2178,22 +2178,6 @@ done:
     DestroyWindow(creation_desc.OutputWindow);
 }
 
-static HMONITOR get_primary_if_right_side_secondary(const DXGI_OUTPUT_DESC *output_desc)
-{
-    HMONITOR primary, secondary;
-    MONITORINFO mi;
-    POINT pt = {0, 0};
-
-    primary = MonitorFromPoint(pt, MONITOR_DEFAULTTONULL);
-    pt.x = output_desc->DesktopCoordinates.right;
-    secondary = MonitorFromPoint(pt, MONITOR_DEFAULTTONULL);
-    mi.cbSize = sizeof(mi);
-    if (secondary && secondary != primary
-            && GetMonitorInfoW(primary, &mi) && (mi.dwFlags & MONITORINFOF_PRIMARY))
-        return primary;
-    return NULL;
-}
-
 static void test_get_containing_output(IUnknown *device, BOOL is_d3d12)
 {
     unsigned int adapter_idx, output_idx, output_count;
@@ -2207,7 +2191,6 @@ static void test_get_containing_output(IUnknown *device, BOOL is_d3d12)
     POINT points[4 * 16];
     unsigned int i, j;
     HMONITOR monitor;
-    HMONITOR primary;
     BOOL fullscreen;
     ULONG refcount;
     HRESULT hr;
@@ -2286,8 +2269,6 @@ static void test_get_containing_output(IUnknown *device, BOOL is_d3d12)
             "Got unexpected desktop coordinates %s, expected %s.\n",
             wine_dbgstr_rect(&output_desc.DesktopCoordinates),
             wine_dbgstr_rect(&monitor_info.rcMonitor));
-
-    primary = get_primary_if_right_side_secondary(&output_desc);
 
     for (adapter_idx = 0; SUCCEEDED(IDXGIFactory_EnumAdapters(factory, adapter_idx, &adapter));
             ++adapter_idx)
@@ -2379,8 +2360,6 @@ static void test_get_containing_output(IUnknown *device, BOOL is_d3d12)
                         output_idx, i);
 
                 hr = IDXGISwapChain_GetContainingOutput(swapchain, &output2);
-                /* Hack to prevent test failures with secondary on the right until multi-monitor support is improved. */
-                todo_wine_if(primary && monitor != primary)
                 ok(hr == S_OK || broken(hr == DXGI_ERROR_UNSUPPORTED),
                         "Adapter %u output %u point %u: Failed to get containing output, hr %#x.\n",
                         adapter_idx, output_idx, i, hr);
@@ -4739,7 +4718,7 @@ static void test_swapchain_present(IUnknown *device, BOOL is_d3d12)
         flush_events();
         ok(hr == S_OK, "Test %u: Got unexpected hr %#x.\n", i, hr);
         hr = IDXGISwapChain_ResizeBuffers(swapchain, 0, 0, 0, DXGI_FORMAT_UNKNOWN, 0);
-        todo_wine_if(!is_d3d12) ok(hr == S_OK, "Test %u: Got unexpected hr %#x.\n", i, hr);
+        ok(hr == S_OK, "Test %u: Got unexpected hr %#x.\n", i, hr);
         hr = IDXGISwapChain_Present(swapchain, 0, flags[i]);
         ok(hr == S_OK, "Test %u: Got unexpected hr %#x.\n", i, hr);
         output = NULL;
@@ -4786,7 +4765,7 @@ static void test_swapchain_present(IUnknown *device, BOOL is_d3d12)
         ok(hr == S_OK, "Test %u: Got unexpected hr %#x.\n", i, hr);
         ok(fullscreen, "Test %u: Got unexpected fullscreen status.\n", i);
         hr = IDXGISwapChain_ResizeBuffers(swapchain, 0, 0, 0, DXGI_FORMAT_UNKNOWN, 0);
-        todo_wine_if(!is_d3d12) ok(hr == S_OK, "Test %u: Got unexpected hr %#x.\n", i, hr);
+        ok(hr == S_OK, "Test %u: Got unexpected hr %#x.\n", i, hr);
         hr = IDXGISwapChain_Present(swapchain, 0, flags[i]);
         ok(hr == S_OK, "Test %u: Got unexpected hr %#x.\n", i, hr);
 
@@ -4794,7 +4773,7 @@ static void test_swapchain_present(IUnknown *device, BOOL is_d3d12)
         /* An invisible window doesn't cause the swapchain to exit fullscreen
          * mode. */
         hr = IDXGISwapChain_ResizeBuffers(swapchain, 0, 0, 0, DXGI_FORMAT_UNKNOWN, 0);
-        todo_wine_if(!is_d3d12) ok(hr == S_OK, "Test %u: Got unexpected hr %#x.\n", i, hr);
+        ok(hr == S_OK, "Test %u: Got unexpected hr %#x.\n", i, hr);
         hr = IDXGISwapChain_Present(swapchain, 0, flags[i]);
         ok(hr == S_OK, "Test %u: Got unexpected hr %#x.\n", i, hr);
         fullscreen = FALSE;
@@ -4818,7 +4797,7 @@ static void test_swapchain_present(IUnknown *device, BOOL is_d3d12)
                 "Test %u: Got unexpected fullscreen status.\n", i);
 
         hr = IDXGISwapChain_ResizeBuffers(swapchain, 0, 0, 0, DXGI_FORMAT_UNKNOWN, 0);
-        todo_wine_if(!is_d3d12) ok(hr == S_OK, "Test %u: Got unexpected hr %#x.\n", i, hr);
+        ok(hr == S_OK, "Test %u: Got unexpected hr %#x.\n", i, hr);
         hr = IDXGISwapChain_Present(swapchain, 0, flags[i]);
         todo_wine_if(is_d3d12) ok(hr == (is_d3d12 ? DXGI_STATUS_OCCLUDED : S_OK),
                 "Test %u: Got unexpected hr %#x.\n", i, hr);
@@ -4837,7 +4816,7 @@ static void test_swapchain_present(IUnknown *device, BOOL is_d3d12)
          * IDXGISwapChain_Present() calls to work, otherwise they will return
          * DXGI_ERROR_INVALID_CALL */
         hr = IDXGISwapChain_ResizeBuffers(swapchain, 0, 0, 0, DXGI_FORMAT_UNKNOWN, 0);
-        todo_wine_if(!is_d3d12) ok(hr == S_OK, "Test %u: Got unexpected hr %#x.\n", i, hr);
+        ok(hr == S_OK, "Test %u: Got unexpected hr %#x.\n", i, hr);
         hr = IDXGISwapChain_Present(swapchain, 0, flags[i]);
         if (flags[i] == DXGI_PRESENT_TEST)
             todo_wine_if(is_d3d12) ok(hr == (is_d3d12 ? DXGI_STATUS_OCCLUDED : S_OK),
@@ -4853,14 +4832,14 @@ static void test_swapchain_present(IUnknown *device, BOOL is_d3d12)
         ShowWindow(occluding_window, SW_SHOW);
 
         hr = IDXGISwapChain_ResizeBuffers(swapchain, 0, 0, 0, DXGI_FORMAT_UNKNOWN, 0);
-        todo_wine_if(!is_d3d12) ok(hr == S_OK, "Test %u: Got unexpected hr %#x.\n", i, hr);
+        ok(hr == S_OK, "Test %u: Got unexpected hr %#x.\n", i, hr);
         hr = IDXGISwapChain_Present(swapchain, 0, flags[i]);
         /* hr == S_OK on vista and 2008 */
         todo_wine ok(hr == DXGI_STATUS_OCCLUDED || broken(hr == S_OK),
                 "Test %u: Got unexpected hr %#x.\n", i, hr);
 
         hr = IDXGISwapChain_ResizeBuffers(swapchain, 0, 0, 0, DXGI_FORMAT_UNKNOWN, 0);
-        todo_wine_if(!is_d3d12) ok(hr == S_OK, "Test %u: Got unexpected hr %#x.\n", i, hr);
+        ok(hr == S_OK, "Test %u: Got unexpected hr %#x.\n", i, hr);
         hr = IDXGISwapChain_Present(swapchain, 0, flags[i]);
         if (flags[i] == DXGI_PRESENT_TEST)
         {
@@ -4869,12 +4848,12 @@ static void test_swapchain_present(IUnknown *device, BOOL is_d3d12)
             /* IDXGISwapChain_Present() without flags refreshes the occlusion
              * state. */
             hr = IDXGISwapChain_ResizeBuffers(swapchain, 0, 0, 0, DXGI_FORMAT_UNKNOWN, 0);
-            todo_wine_if(!is_d3d12) ok(hr == S_OK, "Test %u: Got unexpected hr %#x.\n", i, hr);
+            ok(hr == S_OK, "Test %u: Got unexpected hr %#x.\n", i, hr);
             hr = IDXGISwapChain_Present(swapchain, 0, 0);
             todo_wine ok(hr == DXGI_STATUS_OCCLUDED || broken(hr == S_OK),
                     "Test %u: Got unexpected hr %#x.\n", i, hr);
             hr = IDXGISwapChain_ResizeBuffers(swapchain, 0, 0, 0, DXGI_FORMAT_UNKNOWN, 0);
-            todo_wine_if(!is_d3d12) ok(hr == S_OK, "Test %u: Got unexpected hr %#x.\n", i, hr);
+            ok(hr == S_OK, "Test %u: Got unexpected hr %#x.\n", i, hr);
             hr = IDXGISwapChain_Present(swapchain, 0, DXGI_PRESENT_TEST);
             ok(hr == S_OK, "Test %u: Got unexpected hr %#x.\n", i, hr);
         }
@@ -4890,7 +4869,7 @@ static void test_swapchain_present(IUnknown *device, BOOL is_d3d12)
         DestroyWindow(occluding_window);
         flush_events();
         hr = IDXGISwapChain_ResizeBuffers(swapchain, 0, 0, 0, DXGI_FORMAT_UNKNOWN, 0);
-        todo_wine_if(!is_d3d12) ok(hr == S_OK, "Test %u: Got unexpected hr %#x.\n", i, hr);
+        ok(hr == S_OK, "Test %u: Got unexpected hr %#x.\n", i, hr);
         hr = IDXGISwapChain_Present(swapchain, 0, flags[i]);
         ok(hr == S_OK, "Test %u: Got unexpected hr %#x.\n", i, hr);
 
@@ -5652,9 +5631,8 @@ done:
     IDXGIFactory_Release(factory);
 
     expected_output_count = GetSystemMetrics(SM_CMONITORS);
-    todo_wine_if(expected_output_count > 1)
-        ok(output_count == expected_output_count, "Expect output count %d, got %d\n",
-                expected_output_count, output_count);
+    ok(output_count == expected_output_count, "Expect output count %d, got %d\n",
+            expected_output_count, output_count);
 }
 
 struct message

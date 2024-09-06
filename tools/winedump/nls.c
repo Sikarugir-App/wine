@@ -479,7 +479,7 @@ static const void *dump_compression( const struct compression *compr, const WCHA
         {
             printf( "    " );
             for (k = 0; k < i + 2; k++) printf( " %04x", *p++ );
-            p = (const WCHAR *)(((ULONG_PTR)p + 3) & ~3);
+            p = (const WCHAR *)(((size_t)p + 3) & ~3);
             printf( " -> %s\n", get_sortkey( *(const DWORD *)p ));
             p += 2;
         }

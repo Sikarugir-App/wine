@@ -25,6 +25,7 @@
 #include <winnls.h>
 #include <winternl.h>
 #include <wine/windef16.h>
+#include <wine/winheader_enter.h>
 
 #include <pshpack1.h>
 
@@ -566,5 +567,7 @@ BOOL16      WINAPI WriteProfileSection16(LPCSTR,LPCSTR);
 #define CURRENT_DS      (CURRENT_STACK16->ds)
 #define CURRENT_SP      (((WORD *)NtCurrentTeb()->SystemReserved1)[0])
 #define CURRENT_SS      (((WORD *)NtCurrentTeb()->SystemReserved1)[1])
+
+#include <wine/winheader_exit.h>
 
 #endif /* __WINE_WINE_WINBASE16_H */

@@ -359,7 +359,7 @@ static int parse_spec_export( ORDDEF *odp, DLLSPEC *spec )
     if (odp->type == TYPE_VARARGS)
         odp->flags |= FLAG_NORELAY;  /* no relay debug possible for varags entry point */
 
-    if (target_cpu != CPU_x86)
+    if (target_cpu != CPU_x86 && target_cpu != CPU_x86_32on64)
         odp->flags &= ~(FLAG_THISCALL | FLAG_FASTCALL);
 
     if (!(token = GetToken(1)))
@@ -432,9 +432,9 @@ static int parse_spec_stub( ORDDEF *odp, DLLSPEC *spec )
     odp->link_name = xstrdup("");
     /* don't bother generating stubs for Winelib */
     if (odp->flags & FLAG_CPU_MASK)
-        odp->flags &= FLAG_CPU(CPU_x86) | FLAG_CPU(CPU_x86_64) | FLAG_CPU(CPU_ARM) | FLAG_CPU(CPU_ARM64);
+        odp->flags &= FLAG_CPU(CPU_x86) | FLAG_CPU(CPU_x86_32on64) | FLAG_CPU(CPU_x86_64) | FLAG_CPU(CPU_ARM) | FLAG_CPU(CPU_ARM64);
     else
-        odp->flags |= FLAG_CPU(CPU_x86) | FLAG_CPU(CPU_x86_64) | FLAG_CPU(CPU_ARM) | FLAG_CPU(CPU_ARM64);
+        odp->flags |= FLAG_CPU(CPU_x86) | FLAG_CPU(CPU_x86_32on64) | FLAG_CPU(CPU_x86_64) | FLAG_CPU(CPU_ARM) | FLAG_CPU(CPU_ARM64);
 
     return parse_spec_arguments( odp, spec, 1 );
 }
@@ -508,8 +508,18 @@ static const char *parse_spec_flags( DLLSPEC *spec, ORDDEF *odp )
                         error( "Unknown architecture '%s'\n", cpu_name );
                         return NULL;
                     }
-                    if (cpu_name[0] == '!') cpu_mask |= FLAG_CPU( cpu );
-                    else odp->flags |= FLAG_CPU( cpu );
+                    if (cpu_name[0] == '!')
+                    {
+                        cpu_mask |= FLAG_CPU( cpu );
+                        if (cpu == CPU_x86)
+                            cpu_mask |= FLAG_CPU( CPU_x86_32on64 );
+                    }
+                    else
+                    {
+                        odp->flags |= FLAG_CPU( cpu );
+                        if (cpu == CPU_x86)
+                            odp->flags |= FLAG_CPU( CPU_x86_32on64 );
+                    }
                 }
                 cpu_name = strtok( NULL, "," );
             }
@@ -517,7 +527,7 @@ static const char *parse_spec_flags( DLLSPEC *spec, ORDDEF *odp )
         }
         else if (!strcmp( token, "i386" ))  /* backwards compatibility */
         {
-            odp->flags |= FLAG_CPU(CPU_x86);
+            odp->flags |= FLAG_CPU(CPU_x86)| FLAG_CPU(CPU_x86_32on64);
         }
         else
         {

@@ -405,7 +405,7 @@ static BOOL test_arb_vs_offset_limit(const struct wined3d_gl_info *gl_info)
     if (gl_info->gl_ops.gl.p_glGetError())
     {
         TRACE("OpenGL implementation does not allow indirect addressing offsets > 63\n");
-        TRACE("error: %s\n", debugstr_a((const char *)gl_info->gl_ops.gl.p_glGetString(GL_PROGRAM_ERROR_STRING_ARB)));
+        TRACE("error: %s\n", debugstr_a((const char *WINED3DPTR)gl_info->gl_ops.gl.p_glGetString(GL_PROGRAM_ERROR_STRING_ARB)));
         ret = TRUE;
     } else TRACE("OpenGL implementation allows offsets > 63\n");
 
@@ -417,7 +417,7 @@ static BOOL test_arb_vs_offset_limit(const struct wined3d_gl_info *gl_info)
 }
 
 static BOOL match_amd_r300_to_500(const struct wined3d_gl_info *gl_info, struct wined3d_caps_gl_ctx *ctx,
-        const char *gl_renderer, enum wined3d_gl_vendor gl_vendor,
+        const char *WINED3DPTR gl_renderer, enum wined3d_gl_vendor gl_vendor,
         enum wined3d_pci_vendor card_vendor, enum wined3d_pci_device device)
 {
     return card_vendor == HW_VENDOR_AMD
@@ -427,7 +427,7 @@ static BOOL match_amd_r300_to_500(const struct wined3d_gl_info *gl_info, struct 
 }
 
 static BOOL match_geforce5(const struct wined3d_gl_info *gl_info, struct wined3d_caps_gl_ctx *ctx,
-        const char *gl_renderer, enum wined3d_gl_vendor gl_vendor,
+        const char *WINED3DPTR gl_renderer, enum wined3d_gl_vendor gl_vendor,
         enum wined3d_pci_vendor card_vendor, enum wined3d_pci_device device)
 {
     return card_vendor == HW_VENDOR_NVIDIA
@@ -437,7 +437,7 @@ static BOOL match_geforce5(const struct wined3d_gl_info *gl_info, struct wined3d
 }
 
 static BOOL match_apple(const struct wined3d_gl_info *gl_info, struct wined3d_caps_gl_ctx *ctx,
-        const char *gl_renderer, enum wined3d_gl_vendor gl_vendor,
+        const char *WINED3DPTR gl_renderer, enum wined3d_gl_vendor gl_vendor,
         enum wined3d_pci_vendor card_vendor, enum wined3d_pci_device device)
 {
     /* MacOS has various specialities in the extensions it advertises. Some
@@ -525,8 +525,36 @@ static void test_pbo_functionality(struct wined3d_gl_info *gl_info)
     }
 }
 
+static BOOL match_apple_ati(const struct wined3d_gl_info *gl_info, struct wined3d_caps_gl_ctx *ctx, const char *WINED3DPTR gl_renderer,
+        enum wined3d_gl_vendor gl_vendor, enum wined3d_pci_vendor card_vendor, enum wined3d_pci_device device)
+{
+    return gl_vendor == GL_VENDOR_APPLE && card_vendor == HW_VENDOR_AMD;
+}
+
+static BOOL match_broken_ara(const struct wined3d_gl_info *gl_info, struct wined3d_caps_gl_ctx *ctx, const char *WINED3DPTR gl_renderer,
+        enum wined3d_gl_vendor gl_vendor, enum wined3d_pci_vendor card_vendor, enum wined3d_pci_device device)
+{
+    if (!gl_info->supported[NV_VERTEX_PROGRAM2_OPTION]) return FALSE;
+    if (gl_vendor != GL_VENDOR_APPLE) return FALSE;
+
+    switch (device)
+    {
+        /* There are no intel macs with pre-geforce 7 cards. ARA works on pre-gf8 cards */
+        case CARD_NVIDIA_GEFORCE_7400:
+        case CARD_NVIDIA_GEFORCE_7300:
+        case CARD_NVIDIA_GEFORCE_7600:
+        case CARD_NVIDIA_GEFORCE_7800GT:
+            /* ARA works on GF7 cards */
+            return FALSE;
+
+        default:
+            /* Assume ARA is broken */
+            return TRUE;
+    }
+}
+
 static BOOL match_dx10_capable(const struct wined3d_gl_info *gl_info, struct wined3d_caps_gl_ctx *ctx,
-        const char *gl_renderer, enum wined3d_gl_vendor gl_vendor,
+        const char *WINED3DPTR gl_renderer, enum wined3d_gl_vendor gl_vendor,
         enum wined3d_pci_vendor card_vendor, enum wined3d_pci_device device)
 {
     /* Direct3D 9 cards support 40 single float varyings in hardware, most
@@ -541,8 +569,47 @@ static BOOL match_dx10_capable(const struct wined3d_gl_info *gl_info, struct win
     return gl_info->limits.glsl_varyings > 44;
 }
 
+static BOOL match_apple_broken_uniforms(const struct wined3d_gl_info *gl_info, struct wined3d_caps_gl_ctx *ctx, const char *WINED3DPTR gl_renderer,
+                                        enum wined3d_gl_vendor gl_vendor, enum wined3d_pci_vendor card_vendor, enum wined3d_pci_device device)
+{
+    const char *sysrelease;
+    unsigned int major, minor, ret;
+    void (CDECL *my_wine_get_host_version)(const char **sysname, const char **release);
+
+    /* MacOS dx9 GPU drivers more GLSL vertex shader uniforms than supported by the hardware, and if
+     * more are used it falls back to software. While the compiler can detect if the shader uses all
+     * declared uniforms, the optimization fails if the shader uses relative addressing. So any GLSL
+     * shader using relative addressing falls back to software.
+     *
+     * ARB vp gives the correct amount of uniforms, so use it instead of GLSL.
+     *
+     * In addition, AMD Radeon HD GPUs advertise > 256 constants and can support this in HW, but the
+     * driver nevertheless falls back to software if more than 256 are used. This is fixed in MacOS
+     * 10.8.3 */
+
+    /* Non-Apple GL vendors report uniforms correctly */
+    if (!match_apple(gl_info, ctx, gl_renderer, gl_vendor, card_vendor, device)) return FALSE;
+    /* All dx9 cards are overreported on OSX */
+    if (!match_dx10_capable(gl_info, ctx, gl_renderer, gl_vendor, card_vendor, device)) return TRUE;
+    /* Nvidia and Intel DX10 cards support > 256 uniforms */
+    if (card_vendor != HW_VENDOR_AMD) return FALSE;
+
+    /* On OSX 10.8.3 and later, AMD GPUs support more than 256 constants. This OSX version reports
+     * uname -r "12.3.0" */
+    my_wine_get_host_version = (void *)GetProcAddress(GetModuleHandleA("ntdll.dll"), "wine_get_host_version");
+    if (!my_wine_get_host_version) return FALSE;
+
+    my_wine_get_host_version(NULL, &sysrelease);
+    ret = sscanf(sysrelease, "%u.%u", &major, &minor);
+    if (ret != 2) return FALSE; /* String format changed, assume workaround not needed */
+    if (major > 12) return FALSE;
+    if (major == 12 && minor >= 3) return FALSE;
+
+    return TRUE;
+}
+
 static BOOL match_not_dx10_capable(const struct wined3d_gl_info *gl_info, struct wined3d_caps_gl_ctx *ctx,
-        const char *gl_renderer, enum wined3d_gl_vendor gl_vendor,
+        const char *WINED3DPTR gl_renderer, enum wined3d_gl_vendor gl_vendor,
         enum wined3d_pci_vendor card_vendor, enum wined3d_pci_device device)
 {
     return !match_dx10_capable(gl_info, ctx, gl_renderer, gl_vendor, card_vendor, device);
@@ -550,7 +617,7 @@ static BOOL match_not_dx10_capable(const struct wined3d_gl_info *gl_info, struct
 
 /* A GL context is provided by the caller */
 static BOOL match_allows_spec_alpha(const struct wined3d_gl_info *gl_info, struct wined3d_caps_gl_ctx *ctx,
-        const char *gl_renderer, enum wined3d_gl_vendor gl_vendor,
+        const char *WINED3DPTR gl_renderer, enum wined3d_gl_vendor gl_vendor,
         enum wined3d_pci_vendor card_vendor, enum wined3d_pci_device device)
 {
     GLenum error;
@@ -578,7 +645,7 @@ static BOOL match_allows_spec_alpha(const struct wined3d_gl_info *gl_info, struc
 
 /* A GL context is provided by the caller */
 static BOOL match_broken_nv_clip(const struct wined3d_gl_info *gl_info, struct wined3d_caps_gl_ctx *ctx,
-        const char *gl_renderer, enum wined3d_gl_vendor gl_vendor,
+        const char *WINED3DPTR gl_renderer, enum wined3d_gl_vendor gl_vendor,
         enum wined3d_pci_vendor card_vendor, enum wined3d_pci_device device)
 {
     GLuint prog;
@@ -608,7 +675,7 @@ static BOOL match_broken_nv_clip(const struct wined3d_gl_info *gl_info, struct w
     if(pos != -1)
     {
         WARN("GL_NV_vertex_program2_option result.clip[] test failed\n");
-        TRACE("error: %s\n", debugstr_a((const char *)gl_info->gl_ops.gl.p_glGetString(GL_PROGRAM_ERROR_STRING_ARB)));
+        TRACE("error: %s\n", debugstr_a((const char *WINED3DPTR)gl_info->gl_ops.gl.p_glGetString(GL_PROGRAM_ERROR_STRING_ARB)));
         ret = TRUE;
         while (gl_info->gl_ops.gl.p_glGetError());
     }
@@ -623,7 +690,7 @@ static BOOL match_broken_nv_clip(const struct wined3d_gl_info *gl_info, struct w
 
 /* Context activation is done by the caller. */
 static BOOL match_fbo_tex_update(const struct wined3d_gl_info *gl_info, struct wined3d_caps_gl_ctx *ctx,
-        const char *gl_renderer, enum wined3d_gl_vendor gl_vendor,
+        const char *WINED3DPTR gl_renderer, enum wined3d_gl_vendor gl_vendor,
         enum wined3d_pci_vendor card_vendor, enum wined3d_pci_device device)
 {
     char data[4 * 4 * 4];
@@ -675,7 +742,7 @@ static BOOL match_fbo_tex_update(const struct wined3d_gl_info *gl_info, struct w
 
 /* Context activation is done by the caller. */
 static BOOL match_broken_rgba16(const struct wined3d_gl_info *gl_info, struct wined3d_caps_gl_ctx *ctx,
-        const char *gl_renderer, enum wined3d_gl_vendor gl_vendor,
+        const char *WINED3DPTR gl_renderer, enum wined3d_gl_vendor gl_vendor,
         enum wined3d_pci_vendor card_vendor, enum wined3d_pci_device device)
 {
     /* GL_RGBA16 uses GL_RGBA8 internally on Geforce 7 and older cards.
@@ -701,14 +768,117 @@ static BOOL match_broken_rgba16(const struct wined3d_gl_info *gl_info, struct wi
 }
 
 static BOOL match_fglrx(const struct wined3d_gl_info *gl_info, struct wined3d_caps_gl_ctx *ctx,
-        const char *gl_renderer, enum wined3d_gl_vendor gl_vendor,
+        const char *WINED3DPTR gl_renderer, enum wined3d_gl_vendor gl_vendor,
         enum wined3d_pci_vendor card_vendor, enum wined3d_pci_device device)
 {
     return gl_vendor == GL_VENDOR_FGLRX;
 }
 
+static BOOL match_broken_round(const struct wined3d_gl_info *gl_info, struct wined3d_caps_gl_ctx *ctx, const char *WINED3DPTR gl_renderer,
+        enum wined3d_gl_vendor gl_vendor, enum wined3d_pci_vendor card_vendor, enum wined3d_pci_device device)
+{
+    const char * WINED3DPTR shader =
+        "#version 120\n"
+        "#extension GL_EXT_gpu_shader4 : enable\n"
+        "void main()\n"
+        "{\n"
+        "    vec4 color;\n"
+        "    vec4 rounded = round(gl_MultiTexCoord0.yxzw);\n"
+        "    /* all(rounded == gl_MultiTexCoord1) fails for some reason */\n"
+        "    if (all(equal(rounded, gl_MultiTexCoord1)))\n"
+        "    {\n"
+        "        color = vec4(0.0, 1.0, 0.0, 0.0);\n"
+        "    }\n"
+        "    else\n"
+        "    {\n"
+        "        color = vec4(1.0, 0.0, 0.0, 0.0);\n"
+        "    }\n"
+        "    gl_FrontColor = color;\n"
+        "    gl_Position = gl_Vertex;\n"
+        "}\n";
+    GLuint tex, fbo;
+    GLuint prog, vs;
+    GLenum status;
+    DWORD check;
+    unsigned char red, green, blue;
+
+    if (!gl_info->supported[EXT_GPU_SHADER4]) return FALSE;
+
+    if (wined3d_settings.offscreen_rendering_mode != ORM_FBO)
+    {
+        WARN("FBOs not available, guessing broken glsl round from driver info\n");
+        return gl_vendor == GL_VENDOR_APPLE && card_vendor == HW_VENDOR_AMD;
+    }
+
+    gl_info->gl_ops.gl.p_glGenTextures(1, &tex);
+    gl_info->gl_ops.gl.p_glBindTexture(GL_TEXTURE_2D, tex);
+    gl_info->gl_ops.gl.p_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    gl_info->gl_ops.gl.p_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    gl_info->gl_ops.gl.p_glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 1, 1, 0, GL_BGRA, GL_UNSIGNED_INT_8_8_8_8_REV, NULL);
+    checkGLcall("glTexImage2D");
+    gl_info->gl_ops.gl.p_glBindTexture(GL_TEXTURE_2D, 0);
+
+    gl_info->fbo_ops.glGenFramebuffers(1, &fbo);
+    gl_info->fbo_ops.glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    gl_info->fbo_ops.glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex, 0);
+    checkGLcall("glFramebufferTexture2D");
+
+    status = gl_info->fbo_ops.glCheckFramebufferStatus(GL_FRAMEBUFFER);
+    if (status != GL_FRAMEBUFFER_COMPLETE) ERR("FBO status %#x\n", status);
+    checkGLcall("glCheckFramebufferStatus");
+
+    vs = GL_EXTCALL(glCreateShaderObjectARB(GL_VERTEX_SHADER));
+    GL_EXTCALL(glShaderSourceARB(vs, 1, &shader, 0));
+    GL_EXTCALL(glCompileShaderARB(vs));
+
+    prog = GL_EXTCALL(glCreateProgramObjectARB());
+    GL_EXTCALL(glAttachObjectARB(prog, vs));
+    GL_EXTCALL(glLinkProgramARB(prog));
+    GL_EXTCALL(glDeleteObjectARB(vs));
+    GL_EXTCALL(glUseProgramObjectARB(prog));
+    checkGLcall("round test shader setup");
+
+    gl_info->gl_ops.gl.p_glBegin(GL_QUADS);
+    GL_EXTCALL(glMultiTexCoord4fARB(0, 1.0, 2.0, 3.0, 4.0));
+    /* Note that the result is swizzled */
+    GL_EXTCALL(glMultiTexCoord4fARB(1, 2.0, 1.0, 3.0, 4.0));
+    gl_info->gl_ops.gl.p_glVertex3f(-1.0, -1.0, -0.5);
+    gl_info->gl_ops.gl.p_glVertex3f(-1.0,  1.0, -0.5);
+    gl_info->gl_ops.gl.p_glVertex3f( 1.0,  1.0, -0.5);
+    gl_info->gl_ops.gl.p_glVertex3f( 1.0, -1.0, -0.5);
+    gl_info->gl_ops.gl.p_glEnd();
+    checkGLcall("round test draw");
+
+    gl_info->gl_ops.gl.p_glBindTexture(GL_TEXTURE_2D, tex);
+    gl_info->gl_ops.gl.p_glGetTexImage(GL_TEXTURE_2D, 0, GL_BGRA, GL_UNSIGNED_INT_8_8_8_8_REV, &check);
+    GL_EXTCALL(glUseProgramObjectARB(0));
+    GL_EXTCALL(glDeleteObjectARB(prog));
+
+    gl_info->fbo_ops.glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    gl_info->fbo_ops.glDeleteFramebuffers(1, &fbo);
+    gl_info->gl_ops.gl.p_glBindTexture(GL_TEXTURE_2D, 0);
+    gl_info->gl_ops.gl.p_glDeleteTextures(1, &tex);
+    checkGLcall("round test teardown");
+
+    TRACE("GLSL round test color: %08x\n", check);
+    red = (check & 0x00ff0000) >> 16;
+    green = (check & 0x0000ff00) >> 8;
+    blue = (check & 0x000000ff);
+    /* If round behaves correctly green is returned. Return FALSE in this
+     * case(don't enable quirk). For any other color return TRUE */
+    return (red > 0x10) || (green < 0xf0) || (blue > 0x10);
+}
+
+static void quirk_arb_constants(struct wined3d_gl_info *gl_info)
+{
+    TRACE("Using ARB vs constant limit(=%u) for GLSL.\n", gl_info->limits.arb_vs_native_constants);
+    gl_info->limits.glsl_vs_float_constants = gl_info->limits.arb_vs_native_constants;
+    TRACE("Using ARB ps constant limit(=%u) for GLSL.\n", gl_info->limits.arb_ps_native_constants);
+    gl_info->limits.glsl_ps_float_constants = gl_info->limits.arb_ps_native_constants;
+}
+
 static BOOL match_r200(const struct wined3d_gl_info *gl_info, struct wined3d_caps_gl_ctx *ctx,
-        const char *gl_renderer, enum wined3d_gl_vendor gl_vendor,
+        const char *WINED3DPTR gl_renderer, enum wined3d_gl_vendor gl_vendor,
         enum wined3d_pci_vendor card_vendor, enum wined3d_pci_device device)
 {
     if (card_vendor != HW_VENDOR_AMD) return FALSE;
@@ -717,7 +887,7 @@ static BOOL match_r200(const struct wined3d_gl_info *gl_info, struct wined3d_cap
 }
 
 static BOOL match_broken_arb_fog(const struct wined3d_gl_info *gl_info, struct wined3d_caps_gl_ctx *ctx,
-        const char *gl_renderer, enum wined3d_gl_vendor gl_vendor,
+        const char *WINED3DPTR gl_renderer, enum wined3d_gl_vendor gl_vendor,
         enum wined3d_pci_vendor card_vendor, enum wined3d_pci_device device)
 {
     DWORD data[4];
@@ -779,8 +949,8 @@ static BOOL match_broken_arb_fog(const struct wined3d_gl_info *gl_info, struct w
     gl_info->gl_ops.gl.p_glGetIntegerv(GL_PROGRAM_ERROR_POSITION_ARB, &err_pos);
     if (err_pos != -1)
     {
-        const char *error_str;
-        error_str = (const char *)gl_info->gl_ops.gl.p_glGetString(GL_PROGRAM_ERROR_STRING_ARB);
+        const char *WINED3DPTR error_str;
+        error_str = (const char *WINED3DPTR)gl_info->gl_ops.gl.p_glGetString(GL_PROGRAM_ERROR_STRING_ARB);
         FIXME("Fog test program error at position %d: %s\n\n", err_pos, debugstr_a(error_str));
     }
 
@@ -814,8 +984,38 @@ static BOOL match_broken_arb_fog(const struct wined3d_gl_info *gl_info, struct w
     return data[0] != 0x00ff0000 || data[3] != 0x0000ff00;
 }
 
+static BOOL match_nvidia_multithreading(const struct wined3d_gl_info *gl_info, struct wined3d_caps_gl_ctx *ctx, const char *WINED3DPTR gl_renderer,
+        enum wined3d_gl_vendor gl_vendor, enum wined3d_pci_vendor card_vendor, enum wined3d_pci_device device)
+{
+    char buffer[2];
+    DWORD ret;
+
+    if (gl_vendor != GL_VENDOR_NVIDIA) return FALSE;
+
+    SetLastError(0);
+    ret = GetEnvironmentVariableA("__GL_THREADED_OPTIMIZATIONS", buffer, sizeof(buffer));
+
+    /* The nvidia driver enables its threaded optimizations when the variable is set
+     * and not "0", "n" or "N". Even a value like "00", "NN" or "" enables it */
+    if (!ret)
+        return !GetLastError();
+    if (ret > 1)
+        return TRUE;
+
+    switch(buffer[0])
+    {
+        case 'n':
+        case 'N':
+        case '0':
+            return FALSE;
+
+        default:
+            return TRUE;
+    }
+}
+
 static BOOL match_broken_viewport_subpixel_bits(const struct wined3d_gl_info *gl_info,
-        struct wined3d_caps_gl_ctx *ctx, const char *gl_renderer, enum wined3d_gl_vendor gl_vendor,
+        struct wined3d_caps_gl_ctx *ctx, const char *WINED3DPTR gl_renderer, enum wined3d_gl_vendor gl_vendor,
         enum wined3d_pci_vendor card_vendor, enum wined3d_pci_device device)
 {
     if (!gl_info->supported[ARB_VIEWPORT_ARRAY])
@@ -826,7 +1026,7 @@ static BOOL match_broken_viewport_subpixel_bits(const struct wined3d_gl_info *gl
 }
 
 static BOOL match_no_independent_bit_depths(const struct wined3d_gl_info *gl_info,
-        struct wined3d_caps_gl_ctx *ctx, const char *gl_renderer, enum wined3d_gl_vendor gl_vendor,
+        struct wined3d_caps_gl_ctx *ctx, const char *WINED3DPTR gl_renderer, enum wined3d_gl_vendor gl_vendor,
         enum wined3d_pci_vendor card_vendor, enum wined3d_pci_device device)
 {
     GLuint tex[2], fbo;
@@ -866,6 +1066,13 @@ static BOOL match_no_independent_bit_depths(const struct wined3d_gl_info *gl_inf
     checkGLcall("testing multiple framebuffer attachments with different bit depths");
 
     return status != GL_FRAMEBUFFER_COMPLETE;
+}
+
+static BOOL match_nouveau(const struct wined3d_gl_info *gl_info,
+        struct wined3d_caps_gl_ctx *ctx, const char * WINED3DPTR gl_renderer, enum wined3d_gl_vendor gl_vendor,
+        enum wined3d_pci_vendor card_vendor, enum wined3d_pci_device device)
+{
+    return gl_vendor == GL_VENDOR_MESA && card_vendor == HW_VENDOR_NVIDIA;
 }
 
 static void quirk_apple_glsl_constants(struct wined3d_gl_info *gl_info)
@@ -946,6 +1153,26 @@ static void quirk_disable_nvvp_clip(struct wined3d_gl_info *gl_info)
     gl_info->quirks |= WINED3D_QUIRK_NV_CLIP_BROKEN;
 }
 
+static void quirk_apple_no_glsl_clip(struct wined3d_gl_info *gl_info)
+{
+    gl_info->quirks |= WINED3D_CX_QUIRK_GLSL_CLIP_BROKEN;
+}
+
+static void texcoord_fog_quirk(struct wined3d_gl_info *gl_info)
+{
+    gl_info->quirks |= WINED3D_CX_QUIRK_TEXCOORD_FOG;
+}
+
+static void broken_ara_quirk(struct wined3d_gl_info *gl_info)
+{
+    gl_info->quirks |= WINED3D_CX_QUIRK_BROKEN_ARA;
+}
+
+static void fbo_blit_quirk(struct wined3d_gl_info *gl_info)
+{
+    gl_info->quirks |= WINED3D_CX_QUIRK_BLIT;
+}
+
 static void quirk_fbo_tex_update(struct wined3d_gl_info *gl_info)
 {
     gl_info->quirks |= WINED3D_QUIRK_FBO_TEX_UPDATE;
@@ -968,6 +1195,16 @@ static void quirk_limited_tex_filtering(struct wined3d_gl_info *gl_info)
      * GPUs supporting VTF. Also, Direct3D 9-era GPUs are somewhat limited
      * with float texture filtering and blending. */
     gl_info->quirks |= WINED3D_QUIRK_LIMITED_TEX_FILTERING;
+}
+
+static void broken_round_quirk(struct wined3d_gl_info *gl_info)
+{
+    gl_info->quirks |= WINED3D_CX_QUIRK_BROKEN_ROUND;
+}
+
+static void quirk_apple_double_buffer(struct wined3d_gl_info *gl_info)
+{
+    gl_info->quirks |= WINED3D_CX_QUIRK_APPLE_DOUBLE_BUFFER;
 }
 
 static void quirk_r200_constants(struct wined3d_gl_info *gl_info)
@@ -1003,6 +1240,11 @@ static void quirk_no_independent_bit_depths(struct wined3d_gl_info *gl_info)
     gl_info->quirks |= WINED3D_QUIRK_NO_INDEPENDENT_BIT_DEPTHS;
 }
 
+static void quirk_broken_multithread_gl(struct wined3d_gl_info *gl_info)
+{
+    gl_info->quirks |= WINED3D_CX_QUIRK_BROKEN_MULTITHREAD_GL;
+}
+
 static const struct wined3d_gpu_description *query_gpu_description(const struct wined3d_gl_info *gl_info,
         UINT64 *vram_bytes)
 {
@@ -1032,9 +1274,15 @@ static const struct wined3d_gpu_description *query_gpu_description(const struct 
     return gpu_description;
 }
 
+static void quirk_mapbuffer(struct wined3d_gl_info *gl_info)
+{
+    if (cxgames_hacks.allow_glmapbuffer == WINED3D_MAPBUF_NEVER_NV)
+        cxgames_hacks.allow_glmapbuffer = WINED3D_MAPBUF_NEVER;
+}
+
 /* Context activation is done by the caller. */
 static void fixup_extensions(struct wined3d_gl_info *gl_info, struct wined3d_caps_gl_ctx *ctx,
-        const char *gl_renderer, enum wined3d_gl_vendor gl_vendor)
+        const char *WINED3DPTR gl_renderer, enum wined3d_gl_vendor gl_vendor)
 {
     enum wined3d_pci_vendor card_vendor = ctx->gpu_description->vendor;
     enum wined3d_pci_device device = ctx->gpu_description->device;
@@ -1043,7 +1291,7 @@ static void fixup_extensions(struct wined3d_gl_info *gl_info, struct wined3d_cap
     static const struct driver_quirk
     {
         BOOL (*match)(const struct wined3d_gl_info *gl_info, struct wined3d_caps_gl_ctx *ctx,
-                const char *gl_renderer, enum wined3d_gl_vendor gl_vendor,
+                const char *WINED3DPTR gl_renderer, enum wined3d_gl_vendor gl_vendor,
                 enum wined3d_pci_vendor card_vendor, enum wined3d_pci_device device);
         void (*apply)(struct wined3d_gl_info *gl_info);
         const char *description;
@@ -1058,7 +1306,20 @@ static void fixup_extensions(struct wined3d_gl_info *gl_info, struct wined3d_cap
         {
             match_apple,
             quirk_apple_glsl_constants,
+            "Reserving 12 GLSL uniforms on OSX"
+        },
+        {
+            match_apple_broken_uniforms,
+            quirk_arb_constants,
             "Apple GLSL uniform override"
+        },
+        /* Additionally to matching the apple vendor this code could try to compile a testing NVvp shader
+         * that writes to result.clip[n]. This syntax is broken on osx
+         */
+        {
+            match_apple,
+            quirk_apple_no_glsl_clip,
+            "Disabled vertex shader clipping on Macs"
         },
         {
             match_geforce5,
@@ -1069,6 +1330,17 @@ static void fixup_extensions(struct wined3d_gl_info *gl_info, struct wined3d_cap
             match_dx10_capable,
             quirk_clip_varying,
             "Reserved varying for gl_ClipPos"
+        },
+        {
+            match_amd_r300_to_500,
+            texcoord_fog_quirk,
+            "Disable fog if 8 texcoords are used"
+        },
+        {
+            /* GL_NV_vertex_program2's ARA instruction is broken on gf8+ cards on OSX. */
+            match_broken_ara,
+            broken_ara_quirk,
+            "Disable broken ARA instruction"
         },
         {
             /* GL_EXT_secondary_color does not allow 4 component secondary
@@ -1091,6 +1363,11 @@ static void fixup_extensions(struct wined3d_gl_info *gl_info, struct wined3d_cap
             "Apple NV_vertex_program clip bug quirk"
         },
         {
+            match_apple_ati,
+            fbo_blit_quirk,
+            "GL_EXT_framebuffer_blit glBlendFunc and glColorMask quirk"
+        },
+        {
             match_fbo_tex_update,
             quirk_fbo_tex_update,
             "FBO rebind for attachment updates"
@@ -1111,6 +1388,16 @@ static void fixup_extensions(struct wined3d_gl_info *gl_info, struct wined3d_cap
             "Texture filtering, blending and VTF support is limited"
         },
         {
+            match_broken_round,
+            broken_round_quirk,
+            "Broken GLSL round"
+        },
+        {
+            match_apple,
+            quirk_apple_double_buffer,
+            "Apple double buffered context bug (9330)"
+        },
+        {
             match_r200,
             quirk_r200_constants,
             "r200 vertex shader constants"
@@ -1121,6 +1408,11 @@ static void fixup_extensions(struct wined3d_gl_info *gl_info, struct wined3d_cap
             "ARBfp fogstart == fogend workaround"
         },
         {
+            match_nvidia_multithreading,
+            quirk_mapbuffer,
+            "NVidia multithreading glMapBuffer[Range] quirk"
+        },
+        {
             match_broken_viewport_subpixel_bits,
             quirk_broken_viewport_subpixel_bits,
             "NVIDIA viewport subpixel bits bug"
@@ -1129,6 +1421,11 @@ static void fixup_extensions(struct wined3d_gl_info *gl_info, struct wined3d_cap
             match_no_independent_bit_depths,
             quirk_no_independent_bit_depths,
             "No support for MRT with independent bit depths"
+        },
+        {
+            match_nouveau,
+            quirk_broken_multithread_gl,
+            "broken OpenGL calls from multiple threads in the same process"
         },
     };
 
@@ -1143,9 +1440,9 @@ static void fixup_extensions(struct wined3d_gl_info *gl_info, struct wined3d_cap
     test_pbo_functionality(gl_info);
 }
 
-static DWORD wined3d_parse_gl_version(const char *gl_version)
+static DWORD wined3d_parse_gl_version(const char *WINED3DPTR gl_version)
 {
-    const char *ptr = gl_version;
+    const char *WINED3DPTR ptr = gl_version;
     int major, minor;
 
     major = atoi(ptr);
@@ -1164,7 +1461,7 @@ static DWORD wined3d_parse_gl_version(const char *gl_version)
 }
 
 static enum wined3d_gl_vendor wined3d_guess_gl_vendor(const struct wined3d_gl_info *gl_info,
-        const char *gl_vendor_string, const char *gl_renderer, const char *gl_version)
+        const char *WINED3DPTR gl_vendor_string, const char *WINED3DPTR gl_renderer, const char *WINED3DPTR gl_version)
 {
     /* MacOS has various specialities in the extensions it advertises. Some have to be loaded from
      * the opengl 1.2+ core, while other extensions are advertised, but software emulated. So try to
@@ -1207,7 +1504,7 @@ static enum wined3d_gl_vendor wined3d_guess_gl_vendor(const struct wined3d_gl_in
     return GL_VENDOR_UNKNOWN;
 }
 
-static enum wined3d_pci_vendor wined3d_guess_card_vendor(const char *gl_vendor_string, const char *gl_renderer)
+static enum wined3d_pci_vendor wined3d_guess_card_vendor(const char *WINED3DPTR gl_vendor_string, const char *WINED3DPTR gl_renderer)
 {
     if (strstr(gl_vendor_string, "NVIDIA")
             || strstr(gl_vendor_string, "Nouveau")
@@ -1247,6 +1544,15 @@ static enum wined3d_pci_vendor wined3d_guess_card_vendor(const char *gl_vendor_s
             || strstr(gl_vendor_string, "VMware, Inc."))
         return HW_VENDOR_SOFTWARE;
 
+    /* Report the M1 GPU as an AMD card. Since Windows doesn't run on ARM Macs it is unlikely
+     * Applications expect a GPU made by Apple. This GPU seems more powerful than Intel's iGPUs,
+     * so don't claim it is an Intel card. All Intel CPU Macs since 2015 had Radeon dGPUs.
+     * If the Source Engine thinks it is running on an Nvidia card it will enable its depth-
+     * only prepass optimization, which is broken on M1 GPUs at the time of this commit.
+     * (cw bug 18625) */
+    if (strstr(gl_renderer, "Apple"))
+        return HW_VENDOR_AMD;
+
     FIXME("Received unrecognized GL_VENDOR %s. Returning HW_VENDOR_NVIDIA.\n", debugstr_a(gl_vendor_string));
 
     return HW_VENDOR_NVIDIA;
@@ -1263,7 +1569,6 @@ static enum wined3d_feature_level feature_level_from_caps(const struct wined3d_g
     shader_model = min(shader_model, max(shader_caps->ds_version, 4));
 
     if (gl_info->supported[WINED3D_GL_VERSION_3_2]
-            && gl_info->supported[ARB_POLYGON_OFFSET_CLAMP]
             && gl_info->supported[ARB_SAMPLER_OBJECTS])
     {
         if (shader_model >= 5
@@ -1327,6 +1632,7 @@ cards_nvidia_binary[] =
     {"GTX 1060",                    CARD_NVIDIA_GEFORCE_GTX1060},   /* GeForce 1000 - midend high */
     {"GTX 1050 Ti",                 CARD_NVIDIA_GEFORCE_GTX1050TI}, /* GeForce 1000 - midend */
     {"GTX 1050",                    CARD_NVIDIA_GEFORCE_GTX1050},   /* GeForce 1000 - midend */
+    {"GT 1030",                     CARD_NVIDIA_GEFORCE_GT1030},    /* GeForce 1000 - lowend */
     {"GTX 980 Ti",                  CARD_NVIDIA_GEFORCE_GTX980TI},  /* GeForce 900 - highend */
     {"GTX 980",                     CARD_NVIDIA_GEFORCE_GTX980},    /* GeForce 900 - highend */
     {"GTX 970M",                    CARD_NVIDIA_GEFORCE_GTX970M},   /* GeForce 900 - highend mobile*/
@@ -1646,8 +1952,9 @@ cards_intel[] =
  * drivers: R700, RV790, R680, RV535, RV516, R410, RS485, RV360, RV351. */
 cards_amd_mesa[] =
 {
-    /* Navi 10 */
+    /* Navi 10/14 */
     {"NAVI10",                      CARD_AMD_RADEON_RX_NAVI_10},
+    {"NAVI14",                      CARD_AMD_RADEON_RX_NAVI_14},
     /* Polaris 10/11 */
     {"POLARIS10",                   CARD_AMD_RADEON_RX_480},
     {"POLARIS11",                   CARD_AMD_RADEON_RX_460},
@@ -1858,7 +2165,7 @@ intel_gl_vendor_table[] =
 };
 
 static enum wined3d_pci_device select_card_handler(const struct gl_vendor_selection *table,
-        unsigned int table_size, enum wined3d_gl_vendor gl_vendor, const char *gl_renderer)
+        unsigned int table_size, enum wined3d_gl_vendor gl_vendor, const char *WINED3DPTR gl_renderer)
 {
     unsigned int i, j;
 
@@ -1899,7 +2206,7 @@ card_vendor_table[] =
 };
 
 static enum wined3d_pci_device wined3d_guess_card(enum wined3d_feature_level feature_level,
-        const char *gl_renderer, enum wined3d_gl_vendor *gl_vendor,
+        const char *WINED3DPTR gl_renderer, enum wined3d_gl_vendor *WINED3DPTR gl_vendor,
         enum wined3d_pci_vendor *card_vendor)
 {
     /* A Direct3D device object contains the PCI id (vendor + device) of the
@@ -2029,12 +2336,12 @@ static const struct wined3d_shader_backend_ops *select_shader_backend(const stru
     return &none_shader_backend;
 }
 
-static void parse_extension_string(struct wined3d_gl_info *gl_info, const char *extensions,
+static void parse_extension_string(struct wined3d_gl_info *gl_info, const char *WINED3DPTR extensions,
         const struct wined3d_extension_map *map, UINT entry_count)
 {
     while (*extensions)
     {
-        const char *start;
+        const char *WINED3DPTR start;
         size_t len;
         UINT i;
 
@@ -2063,17 +2370,49 @@ static void parse_extension_string(struct wined3d_gl_info *gl_info, const char *
     }
 }
 
+static void disable_extensions(struct wined3d_gl_info *gl_info, const char *extensions,
+        const struct wined3d_extension_map *map, UINT entry_count)
+{
+    while (*extensions)
+    {
+        const char *start;
+        size_t len;
+        UINT i;
+
+        while (isspace(*extensions))
+            ++extensions;
+        start = extensions;
+        while (!isspace(*extensions) && *extensions)
+            ++extensions;
+
+        len = extensions - start;
+        if (!len)
+            continue;
+
+        for (i = 0; i < entry_count; ++i)
+        {
+            if (len == strlen(map[i].extension_string)
+                    && !memcmp(start, map[i].extension_string, len))
+            {
+                TRACE(" DISABLING: %s.\n", map[i].extension_string);
+                gl_info->supported[map[i].extension] = FALSE;
+                break;
+            }
+        }
+    }
+}
+
 static void enumerate_gl_extensions(struct wined3d_gl_info *gl_info,
         const struct wined3d_extension_map *map, unsigned int map_entries_count)
 {
-    const char *gl_extension_name;
+    const char *WINED3DPTR gl_extension_name;
     unsigned int i, j;
     GLint extensions_count;
 
     gl_info->gl_ops.gl.p_glGetIntegerv(GL_NUM_EXTENSIONS, &extensions_count);
     for (i = 0; i < extensions_count; ++i)
     {
-        gl_extension_name = (const char *)GL_EXTCALL(glGetStringi(GL_EXTENSIONS, i));
+        gl_extension_name = (const char *WINED3DPTR)GL_EXTCALL(glGetStringi(GL_EXTENSIONS, i));
         TRACE("- %s.\n", debugstr_a(gl_extension_name));
         for (j = 0; j < map_entries_count; ++j)
         {
@@ -2756,7 +3095,7 @@ static void load_gl_funcs(struct wined3d_gl_info *gl_info)
 #ifndef USE_WIN32_OPENGL
     /* hack: use the functions directly from the TEB table to bypass the thunks */
     /* note that we still need the above wglGetProcAddress calls to initialize the table */
-    gl_info->gl_ops.ext = ((struct opengl_funcs *)NtCurrentTeb()->glTable)->ext;
+    gl_info->gl_ops.ext = ((struct WINE_OPENGL_FUNCS *)NtCurrentTeb()->glTable)->ext;
 #endif
 
 #define MAP_GL_FUNCTION(core_func, ext_func)                                          \
@@ -2769,7 +3108,7 @@ static void load_gl_funcs(struct wined3d_gl_info *gl_info)
         do                                                                                    \
         {                                                                                     \
             if (!gl_info->gl_ops.ext.p_##core_func)                                           \
-                gl_info->gl_ops.ext.p_##core_func = (void *)gl_info->gl_ops.ext.p_##ext_func; \
+                gl_info->gl_ops.ext.p_##core_func = (void *WINED3DPTR)gl_info->gl_ops.ext.p_##ext_func; \
         } while (0)
 
     MAP_GL_FUNCTION(glActiveTexture, glActiveTextureARB);
@@ -3394,7 +3733,7 @@ static BOOL wined3d_adapter_init_gl_caps(struct wined3d_adapter *adapter,
         {ARB_POLYGON_OFFSET_CLAMP,         MAKEDWORD_VERSION(4, 6)},
         {ARB_TEXTURE_FILTER_ANISOTROPIC,   MAKEDWORD_VERSION(4, 6)},
     };
-    const char *gl_vendor_str, *gl_renderer_str, *gl_version_str;
+    const char *WINED3DPTR gl_vendor_str, *WINED3DPTR gl_renderer_str, *WINED3DPTR gl_version_str;
     struct wined3d_gl_info *gl_info = &adapter->gl_info;
     DWORD gl_version, gl_ext_emul_mask;
     const char *WGL_Extensions = NULL;
@@ -3405,7 +3744,7 @@ static BOOL wined3d_adapter_init_gl_caps(struct wined3d_adapter *adapter,
 
     TRACE("adapter %p.\n", adapter);
 
-    gl_renderer_str = (const char *)gl_info->gl_ops.gl.p_glGetString(GL_RENDERER);
+    gl_renderer_str = (const char *WINED3DPTR)gl_info->gl_ops.gl.p_glGetString(GL_RENDERER);
     TRACE("GL_RENDERER: %s.\n", debugstr_a(gl_renderer_str));
     if (!gl_renderer_str)
     {
@@ -3413,7 +3752,7 @@ static BOOL wined3d_adapter_init_gl_caps(struct wined3d_adapter *adapter,
         return FALSE;
     }
 
-    gl_vendor_str = (const char *)gl_info->gl_ops.gl.p_glGetString(GL_VENDOR);
+    gl_vendor_str = (const char *WINED3DPTR)gl_info->gl_ops.gl.p_glGetString(GL_VENDOR);
     TRACE("GL_VENDOR: %s.\n", debugstr_a(gl_vendor_str));
     if (!gl_vendor_str)
     {
@@ -3422,7 +3761,7 @@ static BOOL wined3d_adapter_init_gl_caps(struct wined3d_adapter *adapter,
     }
 
     /* Parse the GL_VERSION field into major and minor information */
-    gl_version_str = (const char *)gl_info->gl_ops.gl.p_glGetString(GL_VERSION);
+    gl_version_str = (const char *WINED3DPTR)gl_info->gl_ops.gl.p_glGetString(GL_VERSION);
     TRACE("GL_VERSION: %s.\n", debugstr_a(gl_version_str));
     if (!gl_version_str)
     {
@@ -3449,7 +3788,7 @@ static BOOL wined3d_adapter_init_gl_caps(struct wined3d_adapter *adapter,
     TRACE("GL extensions reported:\n");
     if (gl_info->supported[WINED3D_GL_LEGACY_CONTEXT])
     {
-        const char *gl_extensions = (const char *)gl_info->gl_ops.gl.p_glGetString(GL_EXTENSIONS);
+        const char *WINED3DPTR gl_extensions = (const char *WINED3DPTR)gl_info->gl_ops.gl.p_glGetString(GL_EXTENSIONS);
 
         if (!gl_extensions)
         {
@@ -3491,6 +3830,15 @@ static BOOL wined3d_adapter_init_gl_caps(struct wined3d_adapter *adapter,
                 FIXME("GL extension %u not in the GL extensions map.\n", core_extensions[i].extension);
             }
         }
+    }
+
+    /* CodeWeavers Hack bug 5501 - Allow registry disabling of OpenGL extensions. */
+    if (cxgames_hacks.disabled_extensions)
+    {
+        disable_extensions(gl_info, cxgames_hacks.disabled_extensions, gl_extension_map,
+                sizeof(gl_extension_map) / sizeof(*gl_extension_map));
+        disable_extensions(gl_info, cxgames_hacks.disabled_extensions, wgl_extension_map,
+                sizeof(wgl_extension_map) / sizeof(*wgl_extension_map));
     }
 
     if (gl_info->supported[EXT_BLEND_MINMAX] || gl_info->supported[EXT_BLEND_SUBTRACT])
@@ -3712,7 +4060,7 @@ static BOOL wined3d_adapter_init_gl_caps(struct wined3d_adapter *adapter,
 
     if (gl_info->supported[ARB_SHADING_LANGUAGE_100])
     {
-        const char *str = (const char *)gl_info->gl_ops.gl.p_glGetString(GL_SHADING_LANGUAGE_VERSION_ARB);
+        const char *WINED3DPTR str = (const char *WINED3DPTR)gl_info->gl_ops.gl.p_glGetString(GL_SHADING_LANGUAGE_VERSION_ARB);
         unsigned int major, minor;
 
         TRACE("GLSL version string: %s.\n", debugstr_a(str));
@@ -3888,6 +4236,10 @@ static BOOL wined3d_adapter_init_gl_caps(struct wined3d_adapter *adapter,
     return TRUE;
 }
 
+#ifndef USE_WIN32_OPENGL
+#include "wine/hostaddrspace_enter.h"
+#endif
+
 static void WINE_GLAPI invalid_func(const void *data)
 {
     ERR("Invalid vertex attribute function called.\n");
@@ -4013,6 +4365,10 @@ static void WINE_GLAPI generic_float16_4(GLuint idx, const void *data)
 
     gl_info->gl_ops.ext.p_glVertexAttrib4f(idx, x, y, z, w);
 }
+
+#ifndef USE_WIN32_OPENGL
+#include "wine/hostaddrspace_exit.h"
+#endif
 
 static void wined3d_adapter_init_ffp_attrib_ops(struct wined3d_adapter *adapter)
 {
@@ -4278,13 +4634,13 @@ static void adapter_gl_destroy_device(struct wined3d_device *device)
     heap_free(device_gl);
 }
 
-struct wined3d_context *adapter_gl_acquire_context(struct wined3d_device *device,
+static struct wined3d_context *adapter_gl_acquire_context(struct wined3d_device *device,
         struct wined3d_texture *texture, unsigned int sub_resource_idx)
 {
     return wined3d_context_gl_acquire(device, texture, sub_resource_idx);
 }
 
-void adapter_gl_release_context(struct wined3d_context *context)
+static void adapter_gl_release_context(struct wined3d_context *context)
 {
     return wined3d_context_gl_release(wined3d_context_gl(context));
 }
@@ -4754,6 +5110,7 @@ struct wined3d_view_gl_destroy_ctx
 {
     struct wined3d_device *device;
     const struct wined3d_gl_view *gl_view;
+    struct wined3d_bo_user *bo_user;
     struct wined3d_bo_gl *counter_bo;
     void *object;
     struct wined3d_view_gl_destroy_ctx *free;
@@ -4766,6 +5123,8 @@ static void wined3d_view_gl_destroy_object(void *object)
     struct wined3d_context *context;
     struct wined3d_device *device;
     GLuint counter_id;
+
+    TRACE("ctx %p.\n", ctx);
 
     device = ctx->device;
 
@@ -4784,13 +5143,15 @@ static void wined3d_view_gl_destroy_object(void *object)
         checkGLcall("delete resources");
         context_release(context);
     }
+    if (ctx->bo_user)
+        list_remove(&ctx->bo_user->entry);
 
     heap_free(ctx->object);
     heap_free(ctx->free);
 }
 
-static void wined3d_view_gl_destroy(struct wined3d_device *device,
-        const struct wined3d_gl_view *gl_view, struct wined3d_bo_gl *counter_bo, void *object)
+static void wined3d_view_gl_destroy(struct wined3d_device *device, const struct wined3d_gl_view *gl_view,
+        struct wined3d_bo_user *bo_user, struct wined3d_bo_gl *counter_bo, void *object)
 {
     struct wined3d_view_gl_destroy_ctx *ctx, c;
 
@@ -4798,6 +5159,7 @@ static void wined3d_view_gl_destroy(struct wined3d_device *device,
         ctx = &c;
     ctx->device = device;
     ctx->gl_view = gl_view;
+    ctx->bo_user = bo_user;
     ctx->counter_bo = counter_bo;
     ctx->object = object;
     ctx->free = ctx != &c ? ctx : NULL;
@@ -4810,21 +5172,16 @@ static void wined3d_view_gl_destroy(struct wined3d_device *device,
 static void adapter_gl_destroy_rendertarget_view(struct wined3d_rendertarget_view *view)
 {
     struct wined3d_rendertarget_view_gl *view_gl = wined3d_rendertarget_view_gl(view);
-    struct wined3d_device *device = view_gl->v.resource->device;
-    unsigned int swapchain_count = device->swapchain_count;
+    struct wined3d_resource *resource = view_gl->v.resource;
 
     TRACE("view_gl %p.\n", view_gl);
 
-    /* Take a reference to the device, in case releasing the view's resource
-     * would cause the device to be destroyed. However, swapchain resources
-     * don't take a reference to the device, and we wouldn't want to increment
-     * the refcount on a device that's in the process of being destroyed. */
-    if (swapchain_count)
-        wined3d_device_incref(device);
+    /* Take a reference to the resource, in case releasing the resource
+     * would cause the device to be destroyed. */
+    wined3d_resource_incref(resource);
     wined3d_rendertarget_view_cleanup(&view_gl->v);
-    wined3d_view_gl_destroy(device, &view_gl->gl_view, NULL, view_gl);
-    if (swapchain_count)
-        wined3d_device_decref(device);
+    wined3d_view_gl_destroy(resource->device, &view_gl->gl_view, NULL, NULL, view_gl);
+    wined3d_resource_decref(resource);
 }
 
 static HRESULT adapter_gl_create_shader_resource_view(const struct wined3d_view_desc *desc,
@@ -4856,22 +5213,20 @@ static HRESULT adapter_gl_create_shader_resource_view(const struct wined3d_view_
 static void adapter_gl_destroy_shader_resource_view(struct wined3d_shader_resource_view *view)
 {
     struct wined3d_shader_resource_view_gl *view_gl = wined3d_shader_resource_view_gl(view);
-    struct wined3d_device *device = view_gl->v.resource->device;
-    unsigned int swapchain_count = device->swapchain_count;
+    struct wined3d_resource *resource = view_gl->v.resource;
 
     TRACE("view_gl %p.\n", view_gl);
 
-    /* Take a reference to the device, in case releasing the view's resource
-     * would cause the device to be destroyed. However, swapchain resources
-     * don't take a reference to the device, and we wouldn't want to increment
-     * the refcount on a device that's in the process of being destroyed. */
-    if (swapchain_count)
-        wined3d_device_incref(device);
-    list_remove(&view_gl->bo_user.entry);
+    /* Take a reference to the resource. There are two reasons for this:
+     *  - Releasing the resource could in turn cause the device to be
+     *    destroyed, but we still need the device for
+     *    wined3d_view_vk_destroy().
+     *  - We shouldn't free buffer resources until after we've removed the
+     *    view from its bo_user list. */
+    wined3d_resource_incref(resource);
     wined3d_shader_resource_view_cleanup(&view_gl->v);
-    wined3d_view_gl_destroy(device, &view_gl->gl_view, NULL, view_gl);
-    if (swapchain_count)
-        wined3d_device_decref(device);
+    wined3d_view_gl_destroy(resource->device, &view_gl->gl_view, &view_gl->bo_user, NULL, view_gl);
+    wined3d_resource_decref(resource);
 }
 
 static HRESULT adapter_gl_create_unordered_access_view(const struct wined3d_view_desc *desc,
@@ -4903,22 +5258,20 @@ static HRESULT adapter_gl_create_unordered_access_view(const struct wined3d_view
 static void adapter_gl_destroy_unordered_access_view(struct wined3d_unordered_access_view *view)
 {
     struct wined3d_unordered_access_view_gl *view_gl = wined3d_unordered_access_view_gl(view);
-    struct wined3d_device *device = view_gl->v.resource->device;
-    unsigned int swapchain_count = device->swapchain_count;
+    struct wined3d_resource *resource = view_gl->v.resource;
 
     TRACE("view_gl %p.\n", view_gl);
 
-    /* Take a reference to the device, in case releasing the view's resource
-     * would cause the device to be destroyed. However, swapchain resources
-     * don't take a reference to the device, and we wouldn't want to increment
-     * the refcount on a device that's in the process of being destroyed. */
-    if (swapchain_count)
-        wined3d_device_incref(device);
-    list_remove(&view_gl->bo_user.entry);
+    /* Take a reference to the resource. There are two reasons for this:
+     *  - Releasing the resource could in turn cause the device to be
+     *    destroyed, but we still need the device for
+     *    wined3d_view_vk_destroy().
+     *  - We shouldn't free buffer resources until after we've removed the
+     *    view from its bo_user list. */
+    wined3d_resource_incref(resource);
     wined3d_unordered_access_view_cleanup(&view_gl->v);
-    wined3d_view_gl_destroy(device, &view_gl->gl_view, &view_gl->counter_bo, view_gl);
-    if (swapchain_count)
-        wined3d_device_decref(device);
+    wined3d_view_gl_destroy(resource->device, &view_gl->gl_view, &view_gl->bo_user, &view_gl->counter_bo, view_gl);
+    wined3d_resource_decref(resource);
 }
 
 static HRESULT adapter_gl_create_sampler(struct wined3d_device *device, const struct wined3d_sampler_desc *desc,
@@ -4945,6 +5298,8 @@ static void wined3d_sampler_gl_destroy_object(void *object)
     struct wined3d_sampler_gl *sampler_gl = object;
     const struct wined3d_gl_info *gl_info;
     struct wined3d_context *context;
+
+    TRACE("sampler_gl %p.\n", sampler_gl);
 
     if (sampler_gl->name)
     {
@@ -4979,6 +5334,8 @@ static void wined3d_query_gl_destroy_object(void *object)
 {
     struct wined3d_query *query = object;
 
+    TRACE("query %p.\n", query);
+
     if (query->buffer_object)
     {
         struct wined3d_context *context;
@@ -5012,13 +5369,21 @@ static void adapter_gl_flush_context(struct wined3d_context *context)
         context_gl->gl_info->gl_ops.gl.p_glFlush();
 }
 
-void adapter_gl_clear_uav(struct wined3d_context *context,
-        struct wined3d_unordered_access_view *view, const struct wined3d_uvec4 *clear_value)
+static void adapter_gl_clear_uav(struct wined3d_context *context,
+        struct wined3d_unordered_access_view *view, const struct wined3d_uvec4 *clear_value, bool fp)
 {
     TRACE("context %p, view %p, clear_value %s.\n", context, view, debug_uvec4(clear_value));
 
-    wined3d_unordered_access_view_gl_clear_uint(wined3d_unordered_access_view_gl(view),
-            clear_value, wined3d_context_gl(context));
+    wined3d_unordered_access_view_gl_clear(wined3d_unordered_access_view_gl(view),
+            clear_value, wined3d_context_gl(context), fp);
+}
+
+static void adapter_gl_generate_mipmap(struct wined3d_context *context, struct wined3d_shader_resource_view *view)
+{
+    TRACE("context %p, view %p.\n", context, view);
+
+    wined3d_shader_resource_view_gl_generate_mipmap(wined3d_shader_resource_view_gl(view),
+            wined3d_context_gl(context));
 }
 
 static const struct wined3d_adapter_ops wined3d_adapter_gl_ops =
@@ -5055,6 +5420,7 @@ static const struct wined3d_adapter_ops wined3d_adapter_gl_ops =
     .adapter_draw_primitive = draw_primitive,
     .adapter_dispatch_compute = dispatch_compute,
     .adapter_clear_uav = adapter_gl_clear_uav,
+    .adapter_generate_mipmap = adapter_gl_generate_mipmap,
 };
 
 static void wined3d_adapter_gl_init_d3d_info(struct wined3d_adapter_gl *adapter_gl, uint32_t wined3d_creation_flags)
@@ -5116,6 +5482,8 @@ static void wined3d_adapter_gl_init_d3d_info(struct wined3d_adapter_gl *adapter_
     d3d_info->clip_control = !!gl_info->supported[ARB_CLIP_CONTROL];
     d3d_info->full_ffp_varyings = !!(shader_caps.wined3d_caps & WINED3D_SHADER_CAP_FULL_FFP_VARYINGS);
     d3d_info->scaled_resolve = !!gl_info->supported[EXT_FRAMEBUFFER_MULTISAMPLE_BLIT_SCALED];
+    d3d_info->emulated_clipplanes = !!(gl_info->quirks & WINED3D_CX_QUIRK_GLSL_CLIP_BROKEN);
+    d3d_info->multithread_safe = !(gl_info->quirks & WINED3D_CX_QUIRK_BROKEN_MULTITHREAD_GL);
     d3d_info->feature_level = feature_level_from_caps(gl_info, &shader_caps, &fragment_caps);
 
     if (gl_info->supported[ARB_TEXTURE_MULTISAMPLE])
@@ -5162,7 +5530,7 @@ static BOOL wined3d_adapter_gl_init(struct wined3d_adapter_gl *adapter_gl,
     /* To bypass the opengl32 thunks retrieve functions from the WGL driver instead of opengl32 */
     {
         HDC hdc = GetDC( 0 );
-        const struct opengl_funcs *wgl_driver = __wine_get_wgl_driver( hdc, WINE_WGL_DRIVER_VERSION );
+        const struct WINE_OPENGL_FUNCS *wgl_driver = __wine_get_wgl_driver( hdc, WINE_WGL_DRIVER_VERSION );
         ReleaseDC( 0, hdc );
         if (!wgl_driver || wgl_driver == (void *)-1) return FALSE;
         gl_info->gl_ops.wgl = wgl_driver->wgl;

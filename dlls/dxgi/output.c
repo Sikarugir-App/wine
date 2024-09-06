@@ -28,6 +28,11 @@ static inline DXGI_MODE_SCANLINE_ORDER dxgi_mode_scanline_order_from_wined3d(enu
     return (DXGI_MODE_SCANLINE_ORDER)ordering;
 }
 
+static inline DXGI_MODE_ROTATION dxgi_mode_rotation_from_wined3d(enum wined3d_display_rotation rotation)
+{
+    return (DXGI_MODE_ROTATION)rotation;
+}
+
 static void dxgi_mode_from_wined3d(DXGI_MODE_DESC *mode, const struct wined3d_display_mode *wined3d_mode)
 {
     mode->Width = wined3d_mode->width;
@@ -75,9 +80,9 @@ static HRESULT dxgi_output_find_closest_matching_mode(struct dxgi_output *output
     return hr;
 }
 
-static int dxgi_mode_desc_compare(const void *l, const void *r)
+static int dxgi_mode_desc_compare(const void * HOSTPTR l, const void * HOSTPTR r)
 {
-    const DXGI_MODE_DESC *left = l, *right = r;
+    const DXGI_MODE_DESC * HOSTPTR left = l, * HOSTPTR right = r;
     int a, b;
 
     if (left->Width != right->Width)
@@ -318,7 +323,7 @@ static HRESULT STDMETHODCALLTYPE dxgi_output_GetDesc(IDXGIOutput6 *iface, DXGI_O
     memcpy(desc->DeviceName, wined3d_desc.device_name, sizeof(desc->DeviceName));
     desc->DesktopCoordinates = wined3d_desc.desktop_rect;
     desc->AttachedToDesktop = wined3d_desc.attached_to_desktop;
-    desc->Rotation = rotation;
+    desc->Rotation = dxgi_mode_rotation_from_wined3d(rotation);
     desc->Monitor = wined3d_desc.monitor;
 
     return S_OK;
@@ -420,10 +425,45 @@ static HRESULT STDMETHODCALLTYPE dxgi_output_GetGammaControlCapabilities(IDXGIOu
     return S_OK;
 }
 
+static WORD uint16_from_float(float f)
+{
+    f *= 65535.0f;
+    if (f < 0.0f)
+        f = 0.0f;
+    else if (f > 65535.0f)
+        f = 65535.0f;
+
+    return f + 0.5f;
+}
+
 static HRESULT STDMETHODCALLTYPE dxgi_output_SetGammaControl(IDXGIOutput6 *iface,
         const DXGI_GAMMA_CONTROL *gamma_control)
 {
-    FIXME("iface %p, gamma_control %p stub!\n", iface, gamma_control);
+    struct dxgi_output *output = impl_from_IDXGIOutput6(iface);
+    struct wined3d_gamma_ramp ramp;
+    const DXGI_RGB *p;
+    unsigned int i;
+
+    TRACE("iface %p, gamma_control %p.\n", iface, gamma_control);
+
+    if (gamma_control->Scale.Red != 1.0f || gamma_control->Scale.Green != 1.0f || gamma_control->Scale.Blue != 1.0f)
+        FIXME("Ignoring unhandled scale {%.8e, %.8e, %.8e}.\n", gamma_control->Scale.Red,
+                gamma_control->Scale.Green, gamma_control->Scale.Blue);
+    if (gamma_control->Offset.Red != 0.0f || gamma_control->Offset.Green != 0.0f || gamma_control->Offset.Blue != 0.0f)
+        FIXME("Ignoring unhandled offset {%.8e, %.8e, %.8e}.\n", gamma_control->Offset.Red,
+                gamma_control->Offset.Green, gamma_control->Offset.Blue);
+
+    for (i = 0; i < 256; ++i)
+    {
+        p = &gamma_control->GammaCurve[i];
+        ramp.red[i] = uint16_from_float(p->Red);
+        ramp.green[i] = uint16_from_float(p->Green);
+        ramp.blue[i] = uint16_from_float(p->Blue);
+    }
+
+    wined3d_mutex_lock();
+    wined3d_output_set_gamma_ramp(output->wined3d_output, &ramp);
+    wined3d_mutex_unlock();
 
     return S_OK;
 }
@@ -596,7 +636,7 @@ static HRESULT STDMETHODCALLTYPE dxgi_output_GetDesc1(IDXGIOutput6 *iface,
     memcpy(desc->DeviceName, wined3d_desc.device_name, sizeof(desc->DeviceName));
     desc->DesktopCoordinates = wined3d_desc.desktop_rect;
     desc->AttachedToDesktop = wined3d_desc.attached_to_desktop;
-    desc->Rotation = rotation;
+    desc->Rotation = dxgi_mode_rotation_from_wined3d(rotation);
     desc->Monitor = wined3d_desc.monitor;
 
     /* FIXME: fill this from monitor EDID */

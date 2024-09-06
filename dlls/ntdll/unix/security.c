@@ -110,7 +110,7 @@ NTSTATUS WINAPI NtDuplicateToken( HANDLE token, ACCESS_MASK access, OBJECT_ATTRI
 {
     NTSTATUS status;
     data_size_t len;
-    struct object_attributes *objattr;
+    struct object_attributes * HOSTPTR objattr;
 
     if ((status = alloc_object_attributes( attr, &objattr, &len ))) return status;
 
@@ -226,7 +226,7 @@ NTSTATUS WINAPI NtQueryInformationToken( HANDLE token, TOKEN_INFORMATION_CLASS c
     case TokenGroups:
     {
         /* reply buffer is always shorter than output one */
-        void *buffer = malloc( length );
+        void * HOSTPTR buffer = malloc( length );
 
         SERVER_START_REQ( get_token_groups )
         {
@@ -241,8 +241,8 @@ NTSTATUS WINAPI NtQueryInformationToken( HANDLE token, TOKEN_INFORMATION_CLASS c
             }
             else if (status == STATUS_SUCCESS)
             {
-                struct token_groups *tg = buffer;
-                unsigned int *attr = (unsigned int *)(tg + 1);
+                struct token_groups * HOSTPTR tg = buffer;
+                unsigned int * HOSTPTR attr = (unsigned int * HOSTPTR)(tg + 1);
                 ULONG i;
                 const int non_sid_portion = (sizeof(struct token_groups) + tg->count * sizeof(unsigned int));
                 SID *sids = (SID *)((char *)info + FIELD_OFFSET( TOKEN_GROUPS, Groups[tg->count] ));
@@ -250,7 +250,7 @@ NTSTATUS WINAPI NtQueryInformationToken( HANDLE token, TOKEN_INFORMATION_CLASS c
                 if (retlen) *retlen = reply->user_len;
 
                 groups->GroupCount = tg->count;
-                memcpy( sids, (char *)buffer + non_sid_portion,
+                memcpy( sids, (char * HOSTPTR)buffer + non_sid_portion,
                         reply->user_len - offsetof( TOKEN_GROUPS, Groups[tg->count] ));
 
                 for (i = 0; i < tg->count; i++)
@@ -612,7 +612,7 @@ NTSTATUS WINAPI NtFilterToken( HANDLE token, ULONG flags, TOKEN_GROUPS *disable_
 {
     data_size_t privileges_len = 0;
     data_size_t sids_len = 0;
-    SID *sids = NULL;
+    SID * HOSTPTR sids = NULL;
     NTSTATUS status;
 
     TRACE( "%p %#x %p %p %p %p\n", token, flags, disable_sids, privileges,
@@ -630,7 +630,7 @@ NTSTATUS WINAPI NtFilterToken( HANDLE token, ULONG flags, TOKEN_GROUPS *disable_
     if (disable_sids)
     {
         DWORD len, i;
-        BYTE *tmp;
+        BYTE * HOSTPTR tmp;
 
         for (i = 0; i < disable_sids->GroupCount; i++)
         {
@@ -641,7 +641,7 @@ NTSTATUS WINAPI NtFilterToken( HANDLE token, ULONG flags, TOKEN_GROUPS *disable_
         sids = malloc( sids_len );
         if (!sids) return STATUS_NO_MEMORY;
 
-        for (i = 0, tmp = (BYTE *)sids; i < disable_sids->GroupCount; i++, tmp += len)
+        for (i = 0, tmp = (BYTE * HOSTPTR)sids; i < disable_sids->GroupCount; i++, tmp += len)
         {
             SID *sid = disable_sids->Groups[i].Sid;
             len = offsetof( SID, SubAuthority[sid->SubAuthorityCount] );
@@ -705,7 +705,7 @@ NTSTATUS WINAPI NtAccessCheck( PSECURITY_DESCRIPTOR descr, HANDLE token, ACCESS_
                                GENERIC_MAPPING *mapping, PRIVILEGE_SET *privs, ULONG *retlen,
                                ULONG *access_granted, NTSTATUS *access_status)
 {
-    struct object_attributes *objattr;
+    struct object_attributes * HOSTPTR objattr;
     data_size_t len;
     OBJECT_ATTRIBUTES attr;
     NTSTATUS status;
@@ -771,7 +771,7 @@ NTSTATUS WINAPI NtQuerySecurityObject( HANDLE handle, SECURITY_INFORMATION info,
 {
     SECURITY_DESCRIPTOR_RELATIVE *psd = descr;
     NTSTATUS status;
-    void *buffer;
+    void * HOSTPTR buffer;
     unsigned int buffer_size = 512;
 
     TRACE( "(%p,0x%08x,%p,0x%08x,%p)\n", handle, info, descr, length, retlen );
@@ -797,7 +797,7 @@ NTSTATUS WINAPI NtQuerySecurityObject( HANDLE handle, SECURITY_INFORMATION info,
         }
         if (status == STATUS_SUCCESS)
         {
-            struct security_descriptor *sd = buffer;
+            struct security_descriptor * HOSTPTR sd = buffer;
 
             if (!buffer_size) memset( sd, 0, sizeof(*sd) );
             *retlen = sizeof(*psd) + sd->owner_len + sd->group_len + sd->sacl_len + sd->dacl_len;
@@ -828,8 +828,8 @@ NTSTATUS WINAPI NtQuerySecurityObject( HANDLE handle, SECURITY_INFORMATION info,
  */
 NTSTATUS WINAPI NtSetSecurityObject( HANDLE handle, SECURITY_INFORMATION info, PSECURITY_DESCRIPTOR descr )
 {
-    struct object_attributes *objattr;
-    struct security_descriptor *sd;
+    struct object_attributes * HOSTPTR objattr;
+    struct security_descriptor * HOSTPTR sd;
     data_size_t len;
     OBJECT_ATTRIBUTES attr;
     NTSTATUS status;
@@ -841,7 +841,7 @@ NTSTATUS WINAPI NtSetSecurityObject( HANDLE handle, SECURITY_INFORMATION info, P
     /* reuse the object attribute SD marshalling */
     InitializeObjectAttributes( &attr, NULL, 0, 0, descr );
     if ((status = alloc_object_attributes( &attr, &objattr, &len ))) return status;
-    sd = (struct security_descriptor *)(objattr + 1);
+    sd = (struct security_descriptor * HOSTPTR)(objattr + 1);
     if (info & OWNER_SECURITY_INFORMATION && !sd->owner_len)
     {
         free( objattr );

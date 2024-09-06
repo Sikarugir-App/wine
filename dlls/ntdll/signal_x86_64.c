@@ -313,15 +313,26 @@ __ASM_GLOBAL_FUNC( RtlCaptureContext,
                    __ASM_CFI(".cfi_adjust_cfa_offset 8\n\t")
                    "movl $0x10000f,0x30(%rcx)\n\t"  /* context->ContextFlags */
                    "stmxcsr 0x34(%rcx)\n\t"         /* context->MxCsr */
-                   "movw %cs,0x38(%rcx)\n\t"        /* context->SegCs */
-                   "movw %ds,0x3a(%rcx)\n\t"        /* context->SegDs */
-                   "movw %es,0x3c(%rcx)\n\t"        /* context->SegEs */
-                   "movw %fs,0x3e(%rcx)\n\t"        /* context->SegFs */
-                   "movw %gs,0x40(%rcx)\n\t"        /* context->SegGs */
-                   "movw %ss,0x42(%rcx)\n\t"        /* context->SegSs */
+                   /* CW HACK 18765:
+                    * Rosetta on Apple Silicon has a bug where 'movw' from segment selector
+                    * to memory writes 32-bits instead of 16.
+                    * Copy through another register first so nothing gets overwritten.
+                    */
+                   "movq %rax,0x78(%rcx)\n\t"       /* context->Rax */
+                   "movw %cs,%ax\n\t"               /* context->SegCs */
+                   "movw %ax,0x38(%rcx)\n\t"
+                   "movw %ds,%ax\n\t"               /* context->SegDs */
+                   "movw %ax,0x3a(%rcx)\n\t"
+                   "movw %es,%ax\n\t"               /* context->SegEs */
+                   "movw %ax,0x3c(%rcx)\n\t"
+                   "movw %fs,%ax\n\t"               /* context->SegFs */
+                   "movw %ax,0x3e(%rcx)\n\t"
+                   "movw %gs,%ax\n\t"               /* context->SegGs */
+                   "movw %ax,0x40(%rcx)\n\t"
+                   "movw %ss,%ax\n\t"               /* context->SegSs */
+                   "movw %ax,0x42(%rcx)\n\t"
                    "popq 0x44(%rcx)\n\t"            /* context->Eflags */
                    __ASM_CFI(".cfi_adjust_cfa_offset -8\n\t")
-                   "movq %rax,0x78(%rcx)\n\t"       /* context->Rax */
                    "movq %rcx,0x80(%rcx)\n\t"       /* context->Rcx */
                    "movq %rdx,0x88(%rcx)\n\t"       /* context->Rdx */
                    "movq %rbx,0x90(%rcx)\n\t"       /* context->Rbx */
@@ -1193,7 +1204,7 @@ void CDECL RtlRestoreContext( CONTEXT *context, EXCEPTION_RECORD *rec )
     }
 
     TRACE( "returning to %p stack %p\n", (void *)context->Rip, (void *)context->Rsp );
-    NtSetContextThread( GetCurrentThread(), context );
+    NtContinue( context, FALSE );
 }
 
 

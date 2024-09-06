@@ -1676,6 +1676,7 @@ static void test_bitmap_brush(void)
     IDXGISwapChain *swapchain;
     ID2D1BitmapBrush1 *brush1;
     ID2D1BitmapBrush *brush;
+    D2D1_SIZE_F image_size;
     ID2D1RenderTarget *rt;
     ID3D10Device1 *device;
     IDXGISurface *surface;
@@ -1740,11 +1741,89 @@ static void test_bitmap_brush(void)
     bitmap_desc.dpiY = 96.0f;
     hr = ID2D1RenderTarget_CreateBitmap(rt, size, bitmap_data, 4 * sizeof(*bitmap_data), &bitmap_desc, &bitmap);
     ok(SUCCEEDED(hr), "Failed to create bitmap, hr %#x.\n", hr);
+    image_size = ID2D1Bitmap_GetSize(bitmap);
 
     hr = ID2D1Bitmap_QueryInterface(bitmap, &IID_ID2D1Image, (void **)&image);
     ok(SUCCEEDED(hr) || broken(hr == E_NOINTERFACE) /* Vista */, "Failed to get ID2D1Image, hr %#x.\n", hr);
     if (hr == S_OK)
-        ID2D1Image_Release(image);
+    {
+        ID2D1DeviceContext *context;
+        D2D1_POINT_2F offset;
+        D2D1_RECT_F src_rect;
+
+        hr = ID2D1RenderTarget_QueryInterface(rt, &IID_ID2D1DeviceContext, (void **)&context);
+        ok(hr == S_OK, "Unexpected hr %#x.\n", hr);
+
+        ID2D1RenderTarget_BeginDraw(rt);
+        set_color(&color, 0.0f, 0.0f, 1.0f, 1.0f);
+        ID2D1RenderTarget_Clear(rt, &color);
+
+        ID2D1RenderTarget_GetTransform(rt, &tmp_matrix);
+        set_matrix_identity(&matrix);
+        translate_matrix(&matrix, 20.0f, 12.0f);
+        scale_matrix(&matrix, 2.0f, 6.0f);
+        ID2D1RenderTarget_SetTransform(rt, &matrix);
+
+        /* Crash on Windows 7+ */
+        if (0)
+        {
+            ID2D1DeviceContext_DrawImage(context, NULL, NULL, NULL, D2D1_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR,
+                    D2D1_COMPOSITE_MODE_SOURCE_OVER);
+        }
+
+        ID2D1DeviceContext_DrawImage(context, image, NULL, NULL, D2D1_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR,
+                D2D1_COMPOSITE_MODE_SOURCE_OVER);
+
+        set_rect(&src_rect, 0.0f, 0.0f, image_size.width, image_size.height);
+
+        ID2D1DeviceContext_DrawImage(context, image, NULL, &src_rect, D2D1_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR,
+                D2D1_COMPOSITE_MODE_SOURCE_OVER);
+
+        offset.x = -1;
+        offset.y = -1;
+        ID2D1DeviceContext_DrawImage(context, image, &offset, NULL, D2D1_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR,
+                D2D1_COMPOSITE_MODE_SOURCE_OVER);
+
+        offset.x = image_size.width * 2;
+        offset.y = image_size.height;
+        ID2D1DeviceContext_DrawImage(context, image, &offset, NULL, D2D1_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR,
+                D2D1_COMPOSITE_MODE_SOURCE_OVER);
+
+        offset.x = image_size.width * 3;
+        set_rect(&src_rect, image_size.width / 2, image_size.height / 2, image_size.width, image_size.height);
+        ID2D1DeviceContext_DrawImage(context, image, &offset, &src_rect, D2D1_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR,
+                D2D1_COMPOSITE_MODE_SOURCE_OVER);
+
+        offset.x = image_size.width * 4;
+        set_rect(&src_rect, 0.0f, 0.0f, image_size.width * 2, image_size.height * 2);
+        ID2D1DeviceContext_DrawImage(context, image, &offset, &src_rect, D2D1_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR,
+                D2D1_COMPOSITE_MODE_SOURCE_OVER);
+
+        offset.x = image_size.width * 5;
+        set_rect(&src_rect, image_size.width, image_size.height, 0.0f, 0.0f);
+        ID2D1DeviceContext_DrawImage(context, image, &offset, &src_rect, D2D1_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR,
+                D2D1_COMPOSITE_MODE_SOURCE_OVER);
+
+        hr = ID2D1RenderTarget_EndDraw(rt, NULL, NULL);
+        ok(SUCCEEDED(hr), "Failed to end draw, hr %#x.\n", hr);
+        match = compare_surface(surface, "95675fbc4a16404c9568d41b14e8f6be64240998");
+        ok(match, "Surface does not match.\n");
+
+        ID2D1RenderTarget_BeginDraw(rt);
+
+        offset.x = image_size.width * 6;
+        set_rect(&src_rect, 1.0f, 0.0f, 1.0f, image_size.height);
+        ID2D1DeviceContext_DrawImage(context, image, &offset, &src_rect, D2D1_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR,
+                D2D1_COMPOSITE_MODE_SOURCE_OVER);
+
+        hr = ID2D1RenderTarget_EndDraw(rt, NULL, NULL);
+        ok(SUCCEEDED(hr), "Failed to end draw, hr %#x.\n", hr);
+        match = compare_surface(surface, "95675fbc4a16404c9568d41b14e8f6be64240998");
+        ok(match, "Surface does not match.\n");
+
+        ID2D1RenderTarget_SetTransform(rt, &tmp_matrix);
+        ID2D1DeviceContext_Release(context);
+    }
 
     /* Creating a brush with a NULL bitmap crashes on Vista, but works fine on
      * Windows 7+. */
@@ -1812,14 +1891,31 @@ static void test_bitmap_brush(void)
     set_rect(&src_rect, 2.0f, 1.0f, 4.0f, 3.0f);
     ID2D1RenderTarget_DrawBitmap(rt, bitmap, &dst_rect, 1.0f,
             D2D1_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR, &src_rect);
+    set_rect(&dst_rect, 4.0f, 12.0f, 12.0f, 20.0f);
+    set_rect(&src_rect, 0.0f, 0.0f, image_size.width * 2, image_size.height * 2);
+    ID2D1RenderTarget_DrawBitmap(rt, bitmap, &dst_rect, 1.0f,
+            D2D1_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR, &src_rect);
+    set_rect(&dst_rect, 4.0f, 8.0f, 12.0f, 12.0f);
+    set_rect(&src_rect, image_size.width / 2, image_size.height / 2, image_size.width, image_size.height);
+    ID2D1RenderTarget_DrawBitmap(rt, bitmap, &dst_rect, 1.0f,
+            D2D1_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR, &src_rect);
+    set_rect(&dst_rect, 0.0f, 4.0f, 4.0f, 8.0f);
+    set_rect(&src_rect, image_size.width, 0.0f, 0.0f, image_size.height);
+    ID2D1RenderTarget_DrawBitmap(rt, bitmap, &dst_rect, 1.0f,
+            D2D1_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR, &src_rect);
 
     hr = ID2D1RenderTarget_EndDraw(rt, NULL, NULL);
     ok(SUCCEEDED(hr), "Failed to end draw, hr %#x.\n", hr);
-    match = compare_surface(surface, "9437f4447d98feaad41a1c4202ee90aadc718ee6");
+    match = compare_surface(surface, "f5d039c280fa33ba05496c9883192a34108efbbe");
     ok(match, "Surface does not match.\n");
 
     /* Invalid interpolation mode. */
     ID2D1RenderTarget_BeginDraw(rt);
+
+    set_rect(&dst_rect, 4.0f, 8.0f, 8.0f, 12.0f);
+    set_rect(&src_rect, 0.0f, 1.0f, image_size.width, 1.0f);
+    ID2D1RenderTarget_DrawBitmap(rt, bitmap, &dst_rect, 1.0f,
+            D2D1_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR, &src_rect);
 
     set_rect(&dst_rect, 1.0f, 8.0f, 4.0f, 12.0f);
     set_rect(&src_rect, 2.0f, 1.0f, 4.0f, 3.0f);
@@ -1828,7 +1924,19 @@ static void test_bitmap_brush(void)
 
     hr = ID2D1RenderTarget_EndDraw(rt, NULL, NULL);
     ok(hr == E_INVALIDARG, "Unexpected hr %#x.\n", hr);
-    match = compare_surface(surface, "9437f4447d98feaad41a1c4202ee90aadc718ee6");
+    match = compare_surface(surface, "f5d039c280fa33ba05496c9883192a34108efbbe");
+    ok(match, "Surface does not match.\n");
+
+    ID2D1RenderTarget_BeginDraw(rt);
+    ID2D1RenderTarget_Clear(rt, &color);
+
+    set_rect(&src_rect, image_size.width, 0.0f, 0.0f, image_size.height);
+    ID2D1RenderTarget_DrawBitmap(rt, bitmap, NULL, 1.0f,
+            D2D1_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR, &src_rect);
+
+    hr = ID2D1RenderTarget_EndDraw(rt, NULL, NULL);
+    ok(SUCCEEDED(hr), "Failed to end draw, hr %#x.\n", hr);
+    match = compare_surface(surface, "59043096393570ad800dbcbfdd644394b79493bd");
     ok(match, "Surface does not match.\n");
 
     ID2D1RenderTarget_BeginDraw(rt);
@@ -9501,6 +9609,121 @@ static void test_math(void)
     }
 }
 
+static void test_geometry_group(BOOL d3d11)
+{
+    ID2D1Factory *factory;
+    ID2D1GeometryGroup *group;
+    ID2D1Geometry *geometries[2];
+    D2D1_RECT_F rect;
+    HRESULT hr;
+    D2D1_MATRIX_3X2_F matrix;
+    BOOL match;
+
+    hr = D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, &IID_ID2D1Factory, NULL, (void **)&factory);
+    ok(SUCCEEDED(hr), "Failed to create factory, hr %#x.\n", hr);
+
+    set_rect(&rect, -1.0f, -1.0f, 1.0f, 1.0f);
+    hr = ID2D1Factory_CreateRectangleGeometry(factory, &rect, (ID2D1RectangleGeometry **)&geometries[0]);
+    ok(SUCCEEDED(hr), "Failed to create geometry, hr %#x.\n", hr);
+
+    set_rect(&rect, -2.0f, -2.0f, 0.0f, 2.0f);
+    hr = ID2D1Factory_CreateRectangleGeometry(factory, &rect, (ID2D1RectangleGeometry **)&geometries[1]);
+    ok(SUCCEEDED(hr), "Failed to create geometry, hr %#x.\n", hr);
+
+    hr = ID2D1Factory_CreateGeometryGroup(factory, D2D1_FILL_MODE_ALTERNATE, geometries, 2, &group);
+    ok(SUCCEEDED(hr), "Failed to create geometry group, hr %#x.\n", hr);
+
+    set_rect(&rect, 0.0f, 0.0f, 0.0f, 0.0f);
+    hr = ID2D1GeometryGroup_GetBounds(group, NULL, &rect);
+    ok(SUCCEEDED(hr), "Failed to get geometry group bounds, hr %#x.\n", hr);
+    match = compare_rect(&rect, -2.0f, -2.0f, 1.0f, 2.0f, 0);
+    ok(match, "Got unexpected rectangle {%.8e, %.8e, %.8e, %.8e}.\n",
+            rect.left, rect.top, rect.right, rect.bottom);
+
+    set_matrix_identity(&matrix);
+    translate_matrix(&matrix, 80.0f, 640.0f);
+    scale_matrix(&matrix, 2.0f, 0.5f);
+    hr = ID2D1GeometryGroup_GetBounds(group, &matrix, &rect);
+    ok(SUCCEEDED(hr), "Failed to get geometry group bounds, hr %#x.\n", hr);
+    match = compare_rect(&rect, 76.0f, 639.0f, 82.0f, 641.0f, 0);
+    ok(match, "Got unexpected rectangle {%.8e, %.8e, %.8e, %.8e}.\n",
+            rect.left, rect.top, rect.right, rect.bottom);
+
+    ID2D1GeometryGroup_Release(group);
+
+    ID2D1Geometry_Release(geometries[0]);
+    ID2D1Geometry_Release(geometries[1]);
+
+    ID2D1Factory_Release(factory);
+}
+
+static DWORD WINAPI mt_factory_test_thread_func(void *param)
+{
+    ID2D1Multithread *multithread = param;
+
+    ID2D1Multithread_Enter(multithread);
+
+    return 0;
+}
+
+static void test_mt_factory(BOOL d3d11)
+{
+    ID2D1Multithread *multithread;
+    ID2D1Factory *factory;
+    HANDLE thread;
+    HRESULT hr;
+    DWORD ret;
+
+    hr = D2D1CreateFactory(D2D1_FACTORY_TYPE_MULTI_THREADED + 1, &IID_ID2D1Factory, NULL, (void **)&factory);
+    ok(hr == E_INVALIDARG, "Unexpected hr %#x.\n", hr);
+
+    hr = D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, &IID_ID2D1Factory, NULL, (void **)&factory);
+    ok(SUCCEEDED(hr), "Failed to create factory, hr %#x.\n", hr);
+
+    hr = ID2D1Factory_QueryInterface(factory, &IID_ID2D1Multithread, (void **)&multithread);
+    if (hr == E_NOINTERFACE)
+    {
+        win_skip("ID2D1Multithread is not supported.\n");
+        ID2D1Factory_Release(factory);
+        return;
+    }
+    ok(SUCCEEDED(hr), "Failed to get interface, hr %#x.\n", hr);
+
+    ret = ID2D1Multithread_GetMultithreadProtected(multithread);
+    ok(!ret, "Unexpected return value.\n");
+
+    ID2D1Multithread_Enter(multithread);
+    thread = CreateThread(NULL, 0, mt_factory_test_thread_func, multithread, 0, NULL);
+    ok(!!thread, "Failed to create a thread.\n");
+    WaitForSingleObject(thread, INFINITE);
+    CloseHandle(thread);
+
+    ID2D1Multithread_Release(multithread);
+    ID2D1Factory_Release(factory);
+
+    hr = D2D1CreateFactory(D2D1_FACTORY_TYPE_MULTI_THREADED, &IID_ID2D1Factory, NULL, (void **)&factory);
+    ok(SUCCEEDED(hr), "Failed to create factory, hr %#x.\n", hr);
+
+    hr = ID2D1Factory_QueryInterface(factory, &IID_ID2D1Multithread, (void **)&multithread);
+    ok(SUCCEEDED(hr), "Failed to get interface, hr %#x.\n", hr);
+
+    ret = ID2D1Multithread_GetMultithreadProtected(multithread);
+    ok(!!ret, "Unexpected return value.\n");
+
+    ID2D1Multithread_Enter(multithread);
+    thread = CreateThread(NULL, 0, mt_factory_test_thread_func, multithread, 0, NULL);
+    ok(!!thread, "Failed to create a thread.\n");
+    ret = WaitForSingleObject(thread, 10);
+    ok(ret == WAIT_TIMEOUT, "Expected timeout.\n");
+    ID2D1Multithread_Leave(multithread);
+    WaitForSingleObject(thread, INFINITE);
+    CloseHandle(thread);
+
+    ID2D1Multithread_Release(multithread);
+
+    ID2D1Factory_Release(factory);
+}
+
 START_TEST(d2d1)
 {
     unsigned int argc, i;
@@ -9554,6 +9777,8 @@ START_TEST(d2d1)
     queue_test(test_dpi);
     queue_test(test_wic_bitmap_format);
     queue_test(test_math);
+    queue_test(test_geometry_group);
+    queue_test(test_mt_factory);
 
     run_queued_tests();
 }

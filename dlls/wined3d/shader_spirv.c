@@ -118,6 +118,14 @@ struct wined3d_shader_spirv_shader_interface
     struct vkd3d_shader_transform_feedback_info xfb_info;
 };
 
+static const struct vkd3d_shader_compile_option shader_spirv_compile_options[] =
+{
+    {VKD3D_SHADER_COMPILE_OPTION_BUFFER_UAV, VKD3D_SHADER_COMPILE_OPTION_BUFFER_UAV_STORAGE_BUFFER},
+#ifdef __APPLE__
+    {VKD3D_SHADER_COMPILE_OPTION_HACK_DECORATE_INVARIANT, true},
+#endif
+};
+
 static bool wined3d_load_vkd3d_shader_functions(void *vkd3d_shader_handle)
 {
 #define LOAD_FUNCPTR(f) if (!(f = dlsym(vkd3d_shader_handle, #f))) return false;
@@ -332,8 +340,8 @@ static VkShaderModule shader_spirv_compile(struct wined3d_context_vk *context_vk
     info.source.size = shader->byte_code_size;
     info.source_type = VKD3D_SHADER_SOURCE_DXBC_TPF;
     info.target_type = VKD3D_SHADER_TARGET_SPIRV_BINARY;
-    info.options = NULL;
-    info.option_count = 0;
+    info.options = shader_spirv_compile_options;
+    info.option_count = ARRAY_SIZE(shader_spirv_compile_options);
     info.log_level = VKD3D_SHADER_LOG_WARNING;
     info.source_name = NULL;
 
@@ -543,7 +551,7 @@ static bool shader_spirv_resource_bindings_add_uav_counter_binding(struct shader
         return false;
 
     if (!shader_spirv_resource_bindings_add_vk_binding(bindings,
-            VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER, vk_stage, binding_idx))
+            VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, vk_stage, binding_idx))
         return false;
 
     counter = &bindings->uav_counters[uav_counter_count];
@@ -598,7 +606,7 @@ static VkDescriptorType vk_descriptor_type_from_vkd3d(enum vkd3d_shader_descript
 
         case VKD3D_SHADER_DESCRIPTOR_TYPE_UAV:
             if (resource_type == VKD3D_SHADER_RESOURCE_BUFFER)
-                return VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER;
+                return VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
             return VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
 
         case VKD3D_SHADER_DESCRIPTOR_TYPE_SAMPLER:
@@ -758,8 +766,8 @@ static void shader_spirv_scan_shader(struct wined3d_shader *shader,
     info.source.size = shader->byte_code_size;
     info.source_type = VKD3D_SHADER_SOURCE_DXBC_TPF;
     info.target_type = VKD3D_SHADER_TARGET_SPIRV_BINARY;
-    info.options = NULL;
-    info.option_count = 0;
+    info.options = shader_spirv_compile_options;
+    info.option_count = ARRAY_SIZE(shader_spirv_compile_options);
     info.log_level = VKD3D_SHADER_LOG_WARNING;
     info.source_name = NULL;
 
@@ -1019,6 +1027,7 @@ static void shader_spirv_destroy(struct wined3d_shader *shader)
         shader_spirv_invalidate_contexts_graphics_program_variant(&device_vk->d, variant_vk);
         VK_CALL(vkDestroyShaderModule(device_vk->vk_device, variant_vk->vk_module, NULL));
     }
+    heap_free(program_vk->variants);
     vkd3d_shader_free_scan_descriptor_info(&program_vk->descriptor_info);
 
     shader->backend_data = NULL;

@@ -563,6 +563,80 @@ static LCID locale_to_lcid( WCHAR *win_name )
 }
 
 
+/* Unix format is: lang[_country][.charset][@modifier]
+ * Windows format is: lang[-script][-country][_modifier] */
+static LCID unix_locale_to_lcid( WCHAR *buffer )
+{
+    static const WCHAR sepW[] = {'_','.','@',0};
+    static const WCHAR posixW[] = {'P','O','S','I','X',0};
+    static const WCHAR cW[] = {'C',0};
+    static const WCHAR euroW[] = {'e','u','r','o',0};
+    static const WCHAR latinW[] = {'l','a','t','i','n',0};
+    static const WCHAR latnW[] = {'-','L','a','t','n',0};
+    WCHAR win_name[LOCALE_NAME_MAX_LENGTH];
+    WCHAR *p, *country = NULL, *modifier = NULL;
+    LCID lcid;
+
+    if (!(p = wcspbrk( buffer, sepW )))
+    {
+        if (!wcscmp( buffer, posixW ) || !wcscmp( buffer, cW ))
+            return MAKELCID( MAKELANGID(LANG_ENGLISH,SUBLANG_DEFAULT), SORT_DEFAULT );
+        wcscpy( win_name, buffer );
+    }
+    else
+    {
+        if (*p == '_')
+        {
+            *p++ = 0;
+            country = p;
+            p = wcspbrk( p, sepW + 1 );
+        }
+        if (p && *p == '.')
+        {
+            *p++ = 0;
+            /* charset, ignore */
+            p = wcschr( p, '@' );
+        }
+        if (p)
+        {
+            *p++ = 0;
+            modifier = p;
+        }
+    }
+
+    /* rebuild a Windows name */
+
+    wcscpy( win_name, buffer );
+    if (modifier)
+    {
+        if (!wcscmp( modifier, latinW )) wcscat( win_name, latnW );
+        else if (!wcscmp( modifier, euroW )) {} /* ignore */
+        else return 0;
+    }
+    if (country)
+    {
+        p = win_name + wcslen(win_name);
+        *p++ = '-';
+        wcscpy( p, country );
+    }
+
+    if (!RtlLocaleNameToLcid( win_name, &lcid, 0 )) return lcid;
+
+    /* try neutral name */
+    if (country)
+    {
+        p[-1] = 0;
+        if (!RtlLocaleNameToLcid( win_name, &lcid, 2 ))
+        {
+            if (SUBLANGID(lcid) == SUBLANG_NEUTRAL)
+                lcid = MAKELANGID( PRIMARYLANGID(lcid), SUBLANG_DEFAULT );
+            return lcid;
+        }
+    }
+    return 0;
+}
+
+
 /******************************************************************
  *		init_locale
  */
@@ -578,6 +652,58 @@ void init_locale( HMODULE module )
     user_lcid = locale_to_lcid( user_locale );
     if (!system_lcid) system_lcid = MAKELCID( MAKELANGID(LANG_ENGLISH,SUBLANG_DEFAULT), SORT_DEFAULT );
     if (!user_lcid) user_lcid = system_lcid;
+
+    {
+        /* CrossOver hack for bug 15091: locale overrides in the registry. */
+        HANDLE user_key, wine_key;
+        NTSTATUS stat;
+        OBJECT_ATTRIBUTES attr;
+        UNICODE_STRING nameW;
+
+        stat = RtlOpenCurrentUser( KEY_ALL_ACCESS, &user_key );
+        if (stat == STATUS_SUCCESS)
+        {
+            static const WCHAR wineW[] = {'S','o','f','t','w','a','r','e','\\','W','i','n','e',0};
+            attr.Length = sizeof(attr);
+            attr.RootDirectory = user_key;
+            RtlInitUnicodeString( &nameW, wineW );
+            attr.ObjectName = &nameW;
+            attr.Attributes = 0;
+            attr.SecurityDescriptor = NULL;
+            attr.SecurityQualityOfService = NULL;
+            stat = NtCreateKey( &wine_key, KEY_ALL_ACCESS, &attr, 0, NULL, 0, NULL );
+            NtClose( user_key );
+        }
+        if (stat == STATUS_SUCCESS)
+        {
+            static const WCHAR lcallW[] = {'L','C','_','A','L','L',0};
+            static const WCHAR lcctypeW[] = {'L','C','_','C','T','Y','P','E',0};
+            static const WCHAR lcmessagesW[] = {'L','C','_','M','E','S','S','A','G','E','S',0};
+            UNICODE_STRING categorystr;
+            WCHAR bufferW[46];
+            const KEY_VALUE_PARTIAL_INFORMATION *info = (KEY_VALUE_PARTIAL_INFORMATION*)bufferW;
+            DWORD count;
+
+            RtlInitUnicodeString( &categorystr, lcallW );
+            count = sizeof(bufferW);
+            if (!NtQueryValueKey( wine_key, &categorystr, KeyValuePartialInformation, bufferW, count, &count ))
+            {
+                system_lcid = user_lcid = unix_locale_to_lcid( (WCHAR *)info->Data );
+            }
+            else
+            {
+                RtlInitUnicodeString( &categorystr, lcctypeW );
+                count = sizeof(bufferW);
+                if (!NtQueryValueKey( wine_key, &categorystr, KeyValuePartialInformation, bufferW, count, &count ))
+                    system_lcid = unix_locale_to_lcid( bufferW );
+                RtlInitUnicodeString( &categorystr, lcmessagesW );
+                count = sizeof(bufferW);
+                if (!NtQueryValueKey( wine_key, &categorystr, KeyValuePartialInformation, bufferW, count, &count ))
+                    system_lcid = unix_locale_to_lcid( bufferW );
+            }
+            NtClose( wine_key );
+        }
+    }
 
     NtSetDefaultUILanguage( LANGIDFROMLCID(user_lcid) );
     NtSetDefaultLocale( TRUE, user_lcid );

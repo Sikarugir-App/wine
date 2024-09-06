@@ -248,6 +248,7 @@ struct gl_drawable
     SIZE                           pixmap_size;  /* pixmap size for GLXPixmap drawables */
     int                            swap_interval;
     BOOL                           refresh_swap_interval;
+    BOOL                           mutable_pf;
 };
 
 enum glx_swap_control_method
@@ -283,8 +284,6 @@ static CRITICAL_SECTION_DEBUG critsect_debug =
       0, 0, { (DWORD_PTR)(__FILE__ ": context_section") }
 };
 static CRITICAL_SECTION context_section = { &critsect_debug, -1, 0, 0, 0, 0 };
-
-static const BOOL is_win64 = sizeof(void *) > sizeof(int);
 
 static struct opengl_funcs opengl_funcs;
 
@@ -340,6 +339,7 @@ static Bool (*pglXQueryVersion)( Display *dpy, int *maj, int *min );
 static Bool (*pglXIsDirect)( Display *dpy, GLXContext ctx );
 static GLXContext (*pglXGetCurrentContext)( void );
 static GLXDrawable (*pglXGetCurrentDrawable)( void );
+static void (*pglXWaitGL)( void );
 
 /* GLX 1.1 */
 static const char *(*pglXQueryExtensionsString)( Display *dpy, int screen );
@@ -469,7 +469,7 @@ static BOOL X11DRV_WineGL_InitOpenglInfo(void)
     if(pglXMakeCurrent(gdi_display, win, ctx) == 0)
     {
         ERR_(winediag)( "Unable to activate OpenGL context, most likely your %s OpenGL drivers haven't been "
-                        "installed correctly\n", is_win64 ? "64-bit" : "32-bit" );
+                        "installed correctly\n", wine_is_64bit() ? "64-bit" : "32-bit" );
         goto done;
     }
     gl_renderer = (const char *)opengl_funcs.gl.p_glGetString(GL_RENDERER);
@@ -506,7 +506,7 @@ static BOOL X11DRV_WineGL_InitOpenglInfo(void)
         if(!getsockname(fd, (struct sockaddr *)&uaddr, &uaddrlen) && uaddr.sun_family == AF_UNIX)
             ERR_(winediag)("Direct rendering is disabled, most likely your %s OpenGL drivers "
                            "haven't been installed correctly (using GL renderer %s, version %s).\n",
-                           is_win64 ? "64-bit" : "32-bit", debugstr_a(gl_renderer),
+                           wine_is_64bit() ? "64-bit" : "32-bit", debugstr_a(gl_renderer),
                            debugstr_a(gl_version));
     }
     else
@@ -523,7 +523,7 @@ static BOOL X11DRV_WineGL_InitOpenglInfo(void)
         if(!strcmp(gl_renderer, "Software Rasterizer") || !strcmp(gl_renderer, "Mesa X11"))
             ERR_(winediag)("The Mesa OpenGL driver is using software rendering, most likely your %s OpenGL "
                            "drivers haven't been installed correctly (using GL renderer %s, version %s).\n",
-                           is_win64 ? "64-bit" : "32-bit", debugstr_a(gl_renderer),
+                           wine_is_64bit() ? "64-bit" : "32-bit", debugstr_a(gl_renderer),
                            debugstr_a(gl_version));
     }
     ret = TRUE;
@@ -596,6 +596,7 @@ static BOOL WINAPI init_opengl( INIT_ONCE *once, void *param, void **context )
     LOAD_FUNCPTR(glXIsDirect);
     LOAD_FUNCPTR(glXMakeCurrent);
     LOAD_FUNCPTR(glXSwapBuffers);
+    LOAD_FUNCPTR(glXWaitGL);
     LOAD_FUNCPTR(glXQueryVersion);
 
     /* GLX 1.1 */
@@ -674,7 +675,11 @@ static BOOL WINAPI init_opengl( INIT_ONCE *once, void *param, void **context )
         pglXGetFBConfigAttrib = pglXGetProcAddressARB((const GLubyte *) "glXGetFBConfigAttrib");
         pglXGetVisualFromFBConfig = pglXGetProcAddressARB((const GLubyte *) "glXGetVisualFromFBConfig");
         pglXQueryDrawable = pglXGetProcAddressARB((const GLubyte *) "glXQueryDrawable");
-    } else if (has_extension( glxExtensions, "GLX_SGIX_fbconfig")) {
+    } else if(
+#ifdef __APPLE__
+              TRUE ||
+#endif
+              has_extension( glxExtensions, "GLX_SGIX_fbconfig")) {
         pglXChooseFBConfig = pglXGetProcAddressARB((const GLubyte *) "glXChooseFBConfigSGIX");
         pglXGetFBConfigAttrib = pglXGetProcAddressARB((const GLubyte *) "glXGetFBConfigAttribSGIX");
         pglXGetVisualFromFBConfig = pglXGetProcAddressARB((const GLubyte *) "glXGetVisualFromFBConfigSGIX");
@@ -1305,7 +1310,8 @@ static GLXContext create_glxcontext(Display *display, struct wgl_context *contex
 /***********************************************************************
  *              create_gl_drawable
  */
-static struct gl_drawable *create_gl_drawable( HWND hwnd, const struct wgl_pixel_format *format, BOOL known_child )
+static struct gl_drawable *create_gl_drawable( HWND hwnd, const struct wgl_pixel_format *format, BOOL known_child,
+                                               BOOL mutable_pf )
 {
     struct gl_drawable *gl, *prev;
     XVisualInfo *visual = format->visual;
@@ -1325,6 +1331,7 @@ static struct gl_drawable *create_gl_drawable( HWND hwnd, const struct wgl_pixel
     gl->refresh_swap_interval = TRUE;
     gl->format = format;
     gl->ref = 1;
+    gl->mutable_pf = mutable_pf;
 
     if (!known_child && !GetWindow( hwnd, GW_CHILD ) && GetAncestor( hwnd, GA_PARENT ) == GetDesktopWindow())  /* childless top-level window */
     {
@@ -1383,13 +1390,13 @@ static struct gl_drawable *create_gl_drawable( HWND hwnd, const struct wgl_pixel
 /***********************************************************************
  *              set_win_format
  */
-static BOOL set_win_format( HWND hwnd, const struct wgl_pixel_format *format )
+static BOOL set_win_format( HWND hwnd, const struct wgl_pixel_format *format, BOOL mutable_pf )
 {
     struct gl_drawable *gl;
 
     if (!format->visual) return FALSE;
 
-    if (!(gl = create_gl_drawable( hwnd, format, FALSE ))) return FALSE;
+    if (!(gl = create_gl_drawable( hwnd, format, FALSE, mutable_pf ))) return FALSE;
 
     TRACE( "created GL drawable %lx for win %p %s\n",
            gl->drawable, hwnd, debugstr_fbconfig( format->fbconfig ));
@@ -1436,12 +1443,14 @@ static BOOL set_pixel_format(HDC hdc, int format, BOOL allow_change)
         if ((gl = get_gl_drawable( hwnd, hdc )))
         {
             int prev = pixel_format_index( gl->format );
+            BOOL mutable_pf = gl->mutable_pf;
             release_gl_drawable( gl );
-            return prev == format;  /* cannot change it if already set */
+            if (!mutable_pf)
+                return prev == format;  /* cannot change it if already set */
         }
     }
 
-    return set_win_format( hwnd, fmt );
+    return set_win_format( hwnd, fmt, allow_change );
 }
 
 
@@ -1460,7 +1469,7 @@ void sync_gl_drawable( HWND hwnd, BOOL known_child )
         if (!known_child) break; /* Still a childless top-level window */
         /* fall through */
     case DC_GL_PIXMAP_WIN:
-        if (!(new = create_gl_drawable( hwnd, old->format, known_child ))) break;
+        if (!(new = create_gl_drawable( hwnd, old->format, known_child, old->mutable_pf ))) break;
         mark_drawable_dirty( old, new );
         XFlush( gdi_display );
         TRACE( "Recreated GL drawable %lx to replace %lx\n", new->drawable, old->drawable );
@@ -1497,7 +1506,7 @@ void set_gl_drawable_parent( HWND hwnd, HWND parent )
         return;
     }
 
-    if ((new = create_gl_drawable( hwnd, old->format, FALSE )))
+    if ((new = create_gl_drawable( hwnd, old->format, FALSE, old->mutable_pf )))
     {
         mark_drawable_dirty( old, new );
         release_gl_drawable( new );
@@ -3300,8 +3309,13 @@ static BOOL WINAPI glxdrv_wglSwapBuffers( HDC hdc )
         break;
     }
 
-    if (escape.gl_drawable && pglXWaitForSbcOML)
-        pglXWaitForSbcOML( gdi_display, gl->drawable, target_sbc, &ust, &msc, &sbc );
+    if (escape.gl_drawable)
+    {
+        if (pglXWaitForSbcOML)
+            pglXWaitForSbcOML( gdi_display, gl->drawable, target_sbc, &ust, &msc, &sbc );
+        else if (pglXWaitGL)
+            pglXWaitGL();
+    }
 
     release_gl_drawable( gl );
 

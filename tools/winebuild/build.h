@@ -145,7 +145,7 @@ typedef struct
 
 enum target_cpu
 {
-    CPU_x86, CPU_x86_64, CPU_POWERPC, CPU_ARM, CPU_ARM64, CPU_LAST = CPU_ARM64
+    CPU_x86, CPU_x86_32on64, CPU_x86_64, CPU_POWERPC, CPU_ARM, CPU_ARM64, CPU_LAST = CPU_ARM64
 };
 
 enum target_platform
@@ -282,11 +282,14 @@ extern int get_cpu_from_name( const char *name );
 extern unsigned int get_alignment(unsigned int align);
 extern unsigned int get_page_size(void);
 extern unsigned int get_ptr_size(void);
+extern unsigned int get_host_ptr_size(void);
 extern unsigned int get_args_size( const ORDDEF *odp );
 extern const char *asm_name( const char *func );
+extern const char *thunk32_name( const char *func );
 extern const char *func_declaration( const char *func );
 extern const char *asm_globl( const char *func );
 extern const char *get_asm_ptr_keyword(void);
+extern const char *get_asm_host_ptr_keyword(void);
 extern const char *get_asm_string_keyword(void);
 extern const char *get_asm_export_section(void);
 extern const char *get_asm_rodata_section(void);
@@ -391,5 +394,6 @@ extern char *arch_option;
 extern const char *float_abi_option;
 extern int thumb_mode;
 extern int needs_get_pc_thunk;
+extern int needs_invoke32;
 
 #endif  /* __WINE_BUILD_H */

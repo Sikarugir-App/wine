@@ -1020,7 +1020,8 @@ static NTSTATUS wait_on(HANDLE hDevice, int fd, HANDLE hEvent, PIO_STATUS_BLOCK 
     if ((status = NtResetEvent(hEvent, NULL)))
         return status;
 
-    commio = malloc( sizeof(async_commio) );
+    /* Due to passing it to NtCreateThreadEx */
+    commio = RtlAllocateHeap( GetProcessHeap(), 0, sizeof(async_commio) );
     if (!commio) return STATUS_NO_MEMORY;
 
     commio->hDevice = hDevice;
@@ -1102,7 +1103,7 @@ error_caps:
 #endif
 out_now:
     stop_waiting(commio->hDevice);
-    free( commio );
+    RtlFreeHeap( GetProcessHeap(), 0, commio );
     return status;
 }
 

@@ -158,7 +158,7 @@ static BOOL thread_shutdown;
 static HANDLE event_thread;
 
 static int LIBUSB_CALL hotplug_cb(libusb_context *context, libusb_device *device,
-        libusb_hotplug_event event, void *user_data)
+        libusb_hotplug_event event, void * HOSTPTR user_data)
 {
     if (event == LIBUSB_HOTPLUG_EVENT_DEVICE_ARRIVED)
         add_usb_device(device);
@@ -451,7 +451,7 @@ static NTSTATUS usbd_status_from_libusb(enum libusb_transfer_status status)
 
 static void transfer_cb(struct libusb_transfer *transfer)
 {
-    IRP *irp = transfer->user_data;
+    IRP *irp = ADDRSPACECAST(IRP *, transfer->user_data);
     URB *urb = IoGetCurrentIrpStackLocation(irp)->Parameters.Others.Argument1;
 
     TRACE("Completing IRP %p, status %#x.\n", irp, transfer->status);
@@ -499,7 +499,7 @@ static void transfer_cb(struct libusb_transfer *transfer)
 static void queue_irp(struct usb_device *device, IRP *irp, struct libusb_transfer *transfer)
 {
     IoMarkIrpPending(irp);
-    irp->Tail.Overlay.DriverContext[0] = transfer;
+    memcpy(irp->Tail.Overlay.DriverContext, &transfer, sizeof(transfer));
     EnterCriticalSection(&wineusb_cs);
     InsertTailList(&device->irp_list, &irp->Tail.Overlay.ListEntry);
     LeaveCriticalSection(&wineusb_cs);
@@ -558,8 +558,10 @@ static NTSTATUS usb_submit_urb(struct usb_device *device, IRP *irp)
             for (entry = mark->Flink; entry != mark; entry = entry->Flink)
             {
                 IRP *queued_irp = CONTAINING_RECORD(entry, IRP, Tail.Overlay.ListEntry);
+                struct libusb_transfer *transfer;
 
-                if ((ret = libusb_cancel_transfer(queued_irp->Tail.Overlay.DriverContext[0])) < 0)
+                memcpy(&transfer, queued_irp->Tail.Overlay.DriverContext, sizeof(transfer));
+                if ((ret = libusb_cancel_transfer(transfer)) < 0)
                     ERR("Failed to cancel transfer: %s\n", libusb_strerror(ret));
             }
             LeaveCriticalSection(&wineusb_cs);
@@ -618,7 +620,7 @@ static NTSTATUS usb_submit_urb(struct usb_device *device, IRP *irp)
         case URB_FUNCTION_GET_DESCRIPTOR_FROM_DEVICE:
         {
             struct _URB_CONTROL_DESCRIPTOR_REQUEST *req = &urb->UrbControlDescriptorRequest;
-            unsigned char *buffer;
+            unsigned char * HOSTPTR buffer;
 
             if (req->TransferBufferMDL)
                 FIXME("Unhandled MDL output buffer.\n");
@@ -670,7 +672,7 @@ static NTSTATUS usb_submit_urb(struct usb_device *device, IRP *irp)
         {
             struct _URB_CONTROL_VENDOR_OR_CLASS_REQUEST *req = &urb->UrbControlVendorClassRequest;
             uint8_t req_type = LIBUSB_REQUEST_TYPE_VENDOR | LIBUSB_RECIPIENT_INTERFACE;
-            unsigned char *buffer;
+            unsigned char * HOSTPTR buffer;
 
             if (req->TransferFlags & USBD_TRANSFER_DIRECTION_IN)
                 req_type |= LIBUSB_ENDPOINT_IN;

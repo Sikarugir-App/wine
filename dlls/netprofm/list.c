@@ -1001,6 +1001,8 @@ static HRESULT WINAPI connections_enum_Next(
 
     TRACE( "%p, %u %p %p\n", iter, count, ret, fetched );
 
+    if (!ret) return E_POINTER;
+    *ret = NULL;
     if (fetched) *fetched = 0;
     if (!count) return S_OK;
 
@@ -1298,7 +1300,9 @@ static HRESULT WINAPI list_manager_IsConnectedToInternet(
         }
     }
 
-    *pbIsConnected = VARIANT_FALSE;
+    /* CrossOver bug 14719 */
+    FIXME( "hack: returning VARIANT_TRUE\n" );
+    *pbIsConnected = VARIANT_TRUE;
     return S_OK;
 }
 
@@ -1736,8 +1740,10 @@ static void init_networks( struct list_manager *mgr )
     {
         struct network *network;
         struct connection *connection;
+        NET_LUID luid;
 
-        id.Data1 = aa->u.s.IfIndex;
+        ConvertInterfaceIndexToLuid(aa->u.s.IfIndex, &luid);
+        ConvertInterfaceLuidToGuid(&luid, &id);
 
         /* assume a one-to-one mapping between networks and connections */
         if (!(network = create_network( &id ))) goto done;

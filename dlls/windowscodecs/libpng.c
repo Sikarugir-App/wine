@@ -25,11 +25,14 @@
 #include "wine/port.h"
 
 #include <stdarg.h>
+#include <assert.h>
 #ifdef SONAME_LIBPNG
 #include <png.h>
 #endif
 
 #define NONAMELESSUNION
+
+#define COBJMACROS
 
 #include "ntstatus.h"
 #define WIN32_NO_STATUS
@@ -46,8 +49,8 @@ WINE_DEFAULT_DEBUG_CHANNEL(wincodecs);
 
 #ifdef SONAME_LIBPNG
 
-static void *libpng_handle;
-#define MAKE_FUNCPTR(f) static typeof(f) * p##f
+static void * HOSTPTR libpng_handle;
+#define MAKE_FUNCPTR(f) static typeof(f) * HOSTPTR p##f
 MAKE_FUNCPTR(png_create_info_struct);
 MAKE_FUNCPTR(png_create_read_struct);
 MAKE_FUNCPTR(png_create_write_struct);
@@ -96,13 +99,46 @@ static CRITICAL_SECTION_DEBUG init_png_cs_debug =
 };
 static CRITICAL_SECTION init_png_cs = { &init_png_cs_debug, -1, 0, 0, 0, 0 };
 
-static void *load_libpng(void)
+/* CX Hack 9660:
+ * Search for more soname names than the one
+ * that we happened to build Wine against. */
+static struct {
+    const char *soname;
+    const char *verstring;
+} libpng_candidates[] = {
+    { SONAME_LIBPNG, PNG_LIBPNG_VER_STRING },
+    { "libpng16.so", "1.6.0" },
+    { "libpng16.so.0", "1.6.0" },
+    { "libpng16.so.16", "1.6.0" },
+    { "libpng15.so", "1.5.0" },
+    { "libpng15.so.0", "1.5.0" },
+    { "libpng15.so.15", "1.5.0" },
+    { "libpng14.so", "1.4.0" },
+    { "libpng14.so.0", "1.4.0" },
+    { "libpng14.so.14", "1.4.0" },
+    { "libpng12.so", "1.2.0" },
+    { "libpng12.so.0", "1.2.0" },
+    { "libpng12.so.12", "1.2.0" },
+};
+
+static const char *soname_libpng;
+static const char *libpng_ver_string;
+
+static void * HOSTPTR load_libpng(void)
 {
-    void *result;
+    int i;
+    void * HOSTPTR result;
 
     RtlEnterCriticalSection(&init_png_cs);
 
-    if(!libpng_handle && (libpng_handle = dlopen(SONAME_LIBPNG, RTLD_NOW)) != NULL) {
+    for(i = 0; i < sizeof(libpng_candidates) / sizeof(*libpng_candidates); ++i){
+        soname_libpng = libpng_candidates[i].soname;
+        libpng_ver_string = libpng_candidates[i].verstring;
+        libpng_handle = dlopen(soname_libpng, RTLD_NOW);
+        if(libpng_handle)
+            break;
+    }
+    if(libpng_handle){
 
 #define LOAD_FUNCPTR(f) \
     if((p##f = dlsym(libpng_handle, #f)) == NULL) { \
@@ -192,7 +228,8 @@ static void user_warning_fn(png_structp png_ptr, png_const_charp warning_message
 
 static void user_read_data(png_structp png_ptr, png_bytep data, png_size_t length)
 {
-    IStream *stream = ppng_get_io_ptr(png_ptr);
+    /* The stream should be our pointer, so we can truncate it. */
+    IStream * stream = ADDRSPACECAST(void *, ppng_get_io_ptr(png_ptr));
     HRESULT hr;
     ULONG bytesread;
 
@@ -381,7 +418,7 @@ HRESULT CDECL png_decoder_initialize(struct decoder *iface, IStream *stream, str
     {
         This->decoder_frame.num_color_contexts = 1;
         This->color_profile_len = cp_len;
-        This->color_profile = malloc(cp_len);
+        This->color_profile = RtlAllocateHeap(GetProcessHeap(), 0, cp_len);
         if (!This->color_profile)
         {
             hr = E_OUTOFMEMORY;
@@ -438,7 +475,7 @@ HRESULT CDECL png_decoder_initialize(struct decoder *iface, IStream *stream, str
     This->stride = (This->decoder_frame.width * This->decoder_frame.bpp + 7) / 8;
     image_size = This->stride * This->decoder_frame.height;
 
-    This->image_bits = malloc(image_size);
+    This->image_bits = RtlAllocateHeap(GetProcessHeap(), 0, image_size);
     if (!This->image_bits)
     {
         hr = E_OUTOFMEMORY;
@@ -476,9 +513,9 @@ end:
     free(row_pointers);
     if (FAILED(hr))
     {
-        free(This->image_bits);
+        RtlFreeHeap(GetProcessHeap(), 0, This->image_bits);
         This->image_bits = NULL;
-        free(This->color_profile);
+        RtlFreeHeap(GetProcessHeap(), 0, This->color_profile);
         This->color_profile = NULL;
     }
     return hr;
@@ -594,8 +631,8 @@ void CDECL png_decoder_destroy(struct decoder* iface)
 {
     struct png_decoder *This = impl_from_decoder(iface);
 
-    free(This->image_bits);
-    free(This->color_profile);
+    RtlFreeHeap(GetProcessHeap(), 0, This->image_bits);
+    RtlFreeHeap(GetProcessHeap(), 0, This->color_profile);
     RtlFreeHeap(GetProcessHeap(), 0, This);
 }
 
@@ -672,7 +709,7 @@ struct png_encoder
     png_infop info_ptr;
     struct encoder_frame encoder_frame;
     const struct png_pixelformat *format;
-    BYTE *data;
+    BYTE * HOSTPTR data;
     UINT stride;
     UINT passes;
     UINT lines_written;
@@ -685,7 +722,7 @@ static inline struct png_encoder *impl_from_encoder(struct encoder* iface)
 
 static void user_write_data(png_structp png_ptr, png_bytep data, png_size_t length)
 {
-    struct png_encoder *This = ppng_get_io_ptr(png_ptr);
+    struct png_encoder *This = ADDRSPACECAST(void *, ppng_get_io_ptr(png_ptr));
     HRESULT hr;
     ULONG byteswritten;
 
@@ -873,7 +910,7 @@ HRESULT CDECL png_encoder_write_lines(struct encoder* encoder, BYTE *data, DWORD
 {
     struct png_encoder *This = impl_from_encoder(encoder);
     jmp_buf jmpbuf;
-    png_byte **row_pointers=NULL;
+    png_byte ** HOSTPTR row_pointers=NULL;
     UINT i;
 
     if (This->encoder_frame.interlace)
@@ -917,7 +954,7 @@ static HRESULT CDECL png_encoder_commit_frame(struct encoder *encoder)
 {
     struct png_encoder *This = impl_from_encoder(encoder);
     jmp_buf jmpbuf;
-    png_byte **row_pointers=NULL;
+    png_byte ** HOSTPTR row_pointers=NULL;
 
     /* set up setjmp/longjmp error handling */
     if (setjmp(jmpbuf))

@@ -135,9 +135,9 @@ static void shape_add_feature(struct shaping_features *features, unsigned int ta
     shape_add_feature_full(features, tag, FEATURE_GLOBAL, 1);
 }
 
-static int features_sorting_compare(const void *a, const void *b)
+static int features_sorting_compare(const void * HOSTPTR a, const void * HOSTPTR b)
 {
-    const struct shaping_feature *left = a, *right = b;
+    const struct shaping_feature * HOSTPTR left = a, * HOSTPTR right = b;
     return left->tag != right->tag ? (left->tag < right->tag ? -1 : 1) : 0;
 };
 
@@ -316,9 +316,9 @@ HRESULT shape_get_glyphs(struct scriptshaping_context *context, const unsigned i
     return (context->glyph_count <= context->u.subst.max_glyph_count) ? S_OK : E_NOT_SUFFICIENT_BUFFER;
 }
 
-static int tag_array_sorting_compare(const void *a, const void *b)
+static int tag_array_sorting_compare(const void * HOSTPTR a, const void * HOSTPTR b)
 {
-    unsigned int left = GET_BE_DWORD(*(unsigned int *)a), right = GET_BE_DWORD(*(unsigned int *)b);
+    unsigned int left = GET_BE_DWORD(*(unsigned int * HOSTPTR)a), right = GET_BE_DWORD(*(unsigned int * HOSTPTR)b);
     return left != right ? (left < right ? -1 : 1) : 0;
 };
 

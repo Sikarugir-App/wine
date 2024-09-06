@@ -55,6 +55,8 @@ WINE_DEFAULT_DEBUG_CHANNEL(crypt);
 
 WINE_DECLARE_DEBUG_CHANNEL(winediag);
 
+#include "wine/hostptraddrspace_enter.h"
+
 /* Not present in gnutls version < 3.0 */
 int gnutls_pkcs12_simple_parse(gnutls_pkcs12_t p12, const char *password,
     gnutls_x509_privkey_t *key, gnutls_x509_crt_t **chain, unsigned int *chain_len,
@@ -64,7 +66,7 @@ int gnutls_pkcs12_simple_parse(gnutls_pkcs12_t p12, const char *password,
 int gnutls_x509_privkey_get_pk_algorithm2(gnutls_x509_privkey_t, unsigned int*);
 
 static void *libgnutls_handle;
-#define MAKE_FUNCPTR(f) static typeof(f) * p##f
+#define MAKE_FUNCPTR(f) static typeof(f) * HOSTPTR p##f
 MAKE_FUNCPTR(gnutls_global_deinit);
 MAKE_FUNCPTR(gnutls_global_init);
 MAKE_FUNCPTR(gnutls_global_set_log_function);
@@ -84,9 +86,11 @@ static void gnutls_log( int level, const char *msg )
     TRACE( "<%d> %s", level, msg );
 }
 
+#include "wine/hostptraddrspace_exit.h"
+
 BOOL gnutls_initialize(void)
 {
-    const char *env_str;
+    const char * HOSTPTR env_str;
     int ret;
 
     if ((env_str = getenv("GNUTLS_SYSTEM_PRIORITY_FILE")))
@@ -99,7 +103,21 @@ BOOL gnutls_initialize(void)
         setenv("GNUTLS_SYSTEM_PRIORITY_FILE", "/dev/null", 0);
     }
 
-    if (!(libgnutls_handle = dlopen( SONAME_LIBGNUTLS, RTLD_NOW )))
+if (1) { /* CROSSOVER HACK - bug 10151 */
+    const char *libgnutls_name_candidates[] = {SONAME_LIBGNUTLS,
+                                               "libgnutls.so.30",
+                                               "libgnutls.so.28",
+                                               "libgnutls-deb0.so.28",
+                                               "libgnutls.so.26",
+                                               NULL};
+    int i;
+    for (i=0; libgnutls_name_candidates[i] && !libgnutls_handle; i++)
+        libgnutls_handle = dlopen(libgnutls_name_candidates[i], RTLD_NOW);
+}
+else
+    libgnutls_handle = dlopen( SONAME_LIBGNUTLS, RTLD_NOW );
+
+    if (!libgnutls_handle)
     {
         ERR_(winediag)( "failed to load libgnutls, no support for pfx import/export\n" );
         return FALSE;
@@ -162,7 +180,7 @@ static DWORD import_key( gnutls_x509_privkey_t key, DWORD flags, void **data_ret
     gnutls_datum_t m, e, d, p, q, u, e1, e2;
     BLOBHEADER *hdr;
     RSAPUBKEY *rsakey;
-    BYTE *buf, *src, *dst;
+    BYTE *buf, * HOSTPTR src, * HOSTPTR dst;
     DWORD size;
 
     *data_ret = NULL;
@@ -250,9 +268,9 @@ done:
     return size;
 }
 
-static char *password_to_ascii( const WCHAR *str )
+static char * HOSTPTR password_to_ascii( const WCHAR *str )
 {
-    char *ret;
+    char * HOSTPTR ret;
     unsigned int i = 0;
 
     if (!(ret = malloc( (lstrlenW(str) + 1) * sizeof(*ret) ))) return NULL;
@@ -273,7 +291,7 @@ static BOOL WINAPI import_cert_store( CRYPT_DATA_BLOB *pfx, const WCHAR *passwor
     gnutls_x509_privkey_t key;
     gnutls_x509_crt_t *chain;
     unsigned int chain_len, i;
-    char *pwd = NULL;
+    char * HOSTPTR pwd = NULL;
     int ret;
 
     if (password && !(pwd = password_to_ascii( password ))) return FALSE;
@@ -330,7 +348,7 @@ static struct list root_cert_list = LIST_INIT(root_cert_list);
 
 static BYTE *add_cert( SIZE_T size )
 {
-    struct root_cert *cert = malloc( offsetof( struct root_cert, data[size] ));
+    struct root_cert *cert = RtlAllocateHeap( GetProcessHeap(), 0, offsetof( struct root_cert, data[size] ));
 
     if (!cert) return NULL;
     cert->size = size;
@@ -356,7 +374,11 @@ static void add_line_to_buffer(struct DynamicBuffer *buffer, LPCSTR line)
     if (buffer->used + strlen(line) + 1 > buffer->allocated)
     {
         DWORD new_size = max( max( buffer->allocated * 2, 1024 ), buffer->used + strlen(line) + 1 );
-        void *ptr = realloc( buffer->data, new_size );
+        void *ptr;
+        if (buffer->data)
+            ptr = RtlReAllocateHeap( GetProcessHeap(), 0, buffer->data, new_size );
+        else
+            ptr = RtlAllocateHeap( GetProcessHeap(), 0, new_size );
         if (!ptr) return;
         buffer->data = ptr;
         buffer->allocated = new_size;
@@ -480,7 +502,7 @@ static void import_certs_from_file( int fd )
         }
         else if (in_cert) add_line_to_buffer(&saved_cert, line);
     }
-    free( saved_cert.data );
+    RtlFreeHeap( GetProcessHeap(), 0, saved_cert.data );
     TRACE("Read %d certs\n", num_certs);
     fclose(fp);
 }
@@ -491,7 +513,11 @@ static BOOL check_buffer_resize(char **ptr_buf, size_t *buf_size, size_t check_s
 {
     if (check_size > *buf_size)
     {
-        void *ptr = realloc(*ptr_buf, check_size);
+        void *ptr;
+        if (*ptr_buf)
+            ptr = RtlReAllocateHeap( GetProcessHeap(), 0, *ptr_buf, check_size );
+        else
+            ptr = RtlAllocateHeap( GetProcessHeap(), 0, check_size );
 
         if (!ptr) return FALSE;
         *buf_size = check_size;
@@ -526,7 +552,7 @@ static void import_certs_from_dir( LPCSTR path )
                 import_certs_from_path(filebuf, FALSE);
             }
         }
-        free(filebuf);
+        RtlFreeHeap( GetProcessHeap(), 0, filebuf);
         closedir(dir);
     }
 }
@@ -623,7 +649,7 @@ static BOOL WINAPI enum_root_certs( void *buffer, SIZE_T size, SIZE_T *needed )
     {
         memcpy( buffer, cert->data, cert->size );
         list_remove( &cert->entry );
-        free( cert );
+        RtlFreeHeap( GetProcessHeap(), 0, cert );
     }
     return TRUE;
 }

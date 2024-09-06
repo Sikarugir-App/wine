@@ -32,6 +32,7 @@
 #include "wincon.h"
 #include "wine/unicode.h"
 #include "wine/debug.h"
+#include "wine/heap.h"
 
 WINE_DEFAULT_DEBUG_CHANNEL(winevdm);
 
@@ -110,7 +111,7 @@ typedef struct {
  */
 static char *find_dosbox(void)
 {
-    const char *envpath = getenv( "PATH" );
+    const char * HOSTPTR envpath = getenv( "PATH" );
     struct stat st;
     char *path, *p, *buffer, *dir;
     size_t envpath_len;
@@ -150,8 +151,8 @@ static char *find_dosbox(void)
 static void start_dosbox( const char *appname, const char *args )
 {
     static const WCHAR cfgW[] = {'c','f','g',0};
-    const char *home = getenv( "HOME" );
-    const char *prefix = getenv( "WINEPREFIX" );
+    const char * HOSTPTR home = getenv( "HOME" );
+    const char * HOSTPTR prefix = getenv( "WINEPREFIX" );
     WCHAR path[MAX_PATH], config[MAX_PATH];
     HANDLE file;
     char *p, *buffer, app[MAX_PATH];
@@ -198,7 +199,7 @@ static void start_dosbox( const char *appname, const char *args )
     p += sprintf( p, "exit\n" );
     if (WriteFile( file, buffer, strlen(buffer), &written, NULL ) && written == strlen(buffer))
     {
-        const char *args[5];
+        const char * HOSTPTR args[5];
         char *config_file = wine_get_unix_file_name( config );
         args[0] = dosbox;
         args[1] = "-userconf";
@@ -375,17 +376,17 @@ static VOID pif_cmd( char *filename, char *cmdline)
  * Build the command line of a process from the argv array.
  * Copied from ENV_BuildCommandLine.
  */
-static char *build_command_line( char **argv )
+static char *build_command_line( char * HOSTPTR * HOSTPTR argv )
 {
     int len;
-    char *p, **arg, *cmd_line;
+    char *p, * HOSTPTR * HOSTPTR arg, *cmd_line;
 
     len = 0;
     for (arg = argv; *arg; arg++)
     {
         BOOL has_space;
         int bcount;
-        char* a;
+        char* HOSTPTR a;
 
         has_space=FALSE;
         bcount=0;
@@ -420,7 +421,7 @@ static char *build_command_line( char **argv )
     for (arg = argv; *arg; arg++)
     {
         BOOL has_space,has_quote;
-        char* a;
+        char* HOSTPTR a;
 
         /* Check for quotes and spaces in this argument */
         has_space=has_quote=FALSE;
@@ -501,23 +502,26 @@ int main( int argc, char *argv[] )
     WORD showCmd[2];
     char buffer[MAX_PATH];
     STARTUPINFOA info;
-    char *cmdline, *appname, **first_arg;
+    char *cmdline, *appname, * HOSTPTR * HOSTPTR first_arg;
     char *p;
 
     if (!argv[1]) usage();
 
     if (!strcmp( argv[1], "--app-name" ))
     {
-        if (!(appname = argv[2])) usage();
+        if (!argv[2]) usage();
+        appname = heap_strdup(argv[2]);
         first_arg = argv + 3;
     }
     else
     {
-        if (!SearchPathA( NULL, argv[1], ".exe", sizeof(buffer), buffer, NULL ))
+        p = heap_strdup(argv[1]);
+        if (!SearchPathA( NULL, p, ".exe", sizeof(buffer), buffer, NULL ))
         {
             WINE_MESSAGE( "winevdm: unable to exec '%s': file not found\n", argv[1] );
             ExitProcess(1);
         }
+        heap_free(p);
         appname = buffer;
         first_arg = argv + 1;
     }

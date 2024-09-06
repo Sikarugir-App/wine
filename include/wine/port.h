@@ -42,6 +42,8 @@
 # include <unistd.h>
 #endif
 
+#include <wine/hostaddrspace_enter.h>
+
 
 /****************************************************************
  * Hard-coded values for the Windows platform
@@ -85,7 +87,7 @@ typedef int ssize_t;
 #else  /* _WIN32 */
 
 #ifndef __int64
-#  if defined(__x86_64__) || defined(__aarch64__) || defined(_WIN64)
+#  if defined(__x86_64__) || defined(__i386_on_x86_64__) || defined(__aarch64__) || defined(_WIN64)
 #    define __int64 long
 #  else
 #    define __int64 long long
@@ -227,5 +229,7 @@ int symlink(const char *from, const char *to);
 #endif
 
 extern int mkstemps(char *template, int suffix_len);
+
+#include <wine/hostaddrspace_exit.h>
 
 #endif /* !defined(__WINE_WINE_PORT_H) */

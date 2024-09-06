@@ -91,7 +91,7 @@ ULONG CDECL ldap_parse_extended_resultW( WLDAP32_LDAP *ld, WLDAP32_LDAPMessage *
     PWCHAR *oid, struct WLDAP32_berval **data, BOOLEAN free )
 {
     ULONG ret = WLDAP32_LDAP_NOT_SUPPORTED;
-#ifdef HAVE_LDAP
+#if defined(HAVE_LDAP) && !defined(__i386_on_x86_64__)
     char *oidU = NULL;
 
     TRACE( "(%p, %p, %p, %p, 0x%02x)\n", ld, result, oid, data, free );
@@ -157,7 +157,7 @@ ULONG CDECL ldap_parse_referenceW( WLDAP32_LDAP *ld, WLDAP32_LDAPMessage *messag
     PWCHAR **referrals )
 {
     ULONG ret = WLDAP32_LDAP_NOT_SUPPORTED;
-#ifdef HAVE_LDAP_PARSE_REFERENCE
+#if defined(HAVE_LDAP_PARSE_REFERENCE) && !defined(__i386_on_x86_64__)
     char **referralsU = NULL;
 
     TRACE( "(%p, %p, %p)\n", ld, message, referrals );
@@ -240,7 +240,7 @@ ULONG CDECL ldap_parse_resultW( WLDAP32_LDAP *ld, WLDAP32_LDAPMessage *result,
     PLDAPControlW **serverctrls, BOOLEAN free )
 {
     ULONG ret = WLDAP32_LDAP_NOT_SUPPORTED;
-#ifdef HAVE_LDAP
+#if defined(HAVE_LDAP) && !defined(__i386_on_x86_64__)
     char *matchedU = NULL, *errorU = NULL, **referralsU = NULL;
     LDAPControl **serverctrlsU = NULL;
 
@@ -319,7 +319,7 @@ ULONG CDECL ldap_parse_sort_controlW( WLDAP32_LDAP *ld, PLDAPControlW *control,
     ULONG *result, PWCHAR *attr )
 {
     ULONG ret = WLDAP32_LDAP_NOT_SUPPORTED;
-#ifdef HAVE_LDAP
+#if defined(HAVE_LDAP) && !defined(__i386_on_x86_64__)
     char *attrU = NULL;
     LDAPControl **controlU = NULL;
 #ifdef HAVE_LDAP_PARSE_SORT_CONTROL
@@ -338,7 +338,7 @@ ULONG CDECL ldap_parse_sort_controlW( WLDAP32_LDAP *ld, PLDAPControlW *control,
     controlU = controlarrayWtoU( control );
     if (!controlU) return WLDAP32_LDAP_NO_MEMORY;
 
-#ifdef HAVE_LDAP_PARSE_SORT_CONTROL
+#if defined( HAVE_LDAP_PARSE_SORT_CONTROL )
     if (!(ret = ldap_parse_sort_control( ld->ld, controlU, &res, &attrU )))
     {
         *result = res;
@@ -424,7 +424,7 @@ INT CDECL ldap_parse_vlv_controlW( WLDAP32_LDAP *ld, PLDAPControlW *control,
     struct WLDAP32_berval **context, PINT errcode )
 {
     int ret = WLDAP32_LDAP_NOT_SUPPORTED;
-#ifdef HAVE_LDAP
+#if defined(HAVE_LDAP) && !defined(__i386_on_x86_64__)
     LDAPControl **controlU = NULL;
 #ifdef HAVE_LDAP_PARSE_VLV_CONTROL
     unsigned long pos, count;

@@ -166,16 +166,46 @@ static struct gdb_xpoint *gdb_find_xpoint(struct gdb_context *gdbctx, struct dbg
     return NULL;
 }
 
-static BOOL tgt_process_gdbproxy_read(HANDLE hProcess, const void* addr,
-                                      void* buffer, SIZE_T len, SIZE_T* rlen)
+static BOOL tgt_process_gdbproxy_read(HANDLE hProcess, const void* HOSTPTR addr,
+                                      void* buffer, SIZE_T len, SIZE_T* HOSTPTR rlen)
 {
-    return ReadProcessMemory( hProcess, addr, buffer, len, rlen );
+    const void * WIN32PTR guestptr;
+    SIZE_T guestlen;
+    BOOL ret;
+#ifdef __i386_on_x86_64__
+    guestptr = TRUNCCAST(const void *, addr);
+    if (addr != guestptr)
+    {
+        FIXME("Read of 64 bit address %p from 32 bit process.\n", addr);
+        return FALSE;
+    }
+#else
+    guestptr = addr;
+#endif
+    ret = ReadProcessMemory( hProcess, guestptr, buffer, len, &guestlen );
+    *rlen = guestlen;
+    return ret;
 }
 
-static BOOL tgt_process_gdbproxy_write(HANDLE hProcess, void* addr,
+static BOOL tgt_process_gdbproxy_write(HANDLE hProcess, void* HOSTPTR addr,
                                        const void* buffer, SIZE_T len, SIZE_T* wlen)
 {
-    return WriteProcessMemory( hProcess, addr, buffer, len, wlen );
+    void * WIN32PTR guestptr;
+    SIZE_T guestlen;
+    BOOL ret;
+#ifdef __i386_on_x86_64__
+    guestptr = TRUNCCAST(void *, addr);
+    if (addr != guestptr)
+    {
+        FIXME("Read of 64 bit address %p from 32 bit process.\n", addr);
+        return FALSE;
+    }
+#else
+    guestptr = addr;
+#endif
+    ret = WriteProcessMemory( hProcess, guestptr, buffer, len, &guestlen );
+    *wlen = guestlen;
+    return ret;
 }
 
 static struct be_process_io be_process_gdbproxy_io =
@@ -206,9 +236,9 @@ static inline unsigned char hex_to0(int x)
     return "0123456789abcdef"[x];
 }
 
-static void hex_from(void* dst, const char* src, size_t len)
+static void hex_from(void* HOSTPTR dst, const char* HOSTPTR src, size_t len)
 {
-    unsigned char *p = dst;
+    unsigned char * HOSTPTR p = dst;
     while (len--)
     {
         *p++ = (hex_from0(src[0]) << 4) | hex_from0(src[1]);
@@ -216,9 +246,9 @@ static void hex_from(void* dst, const char* src, size_t len)
     }
 }
 
-static void hex_to(char* dst, const void* src, size_t len)
+static void hex_to(char* HOSTPTR dst, const void* HOSTPTR src, size_t len)
 {
-    const unsigned char *p = src;
+    const unsigned char * HOSTPTR p = src;
     while (len--)
     {
         *dst++ = hex_to0(*p >> 4);
@@ -227,7 +257,7 @@ static void hex_to(char* dst, const void* src, size_t len)
     }
 }
 
-static unsigned char checksum(const char* ptr, int len)
+static unsigned char checksum(const char* HOSTPTR ptr, int len)
 {
     unsigned cksum = 0;
 
@@ -261,7 +291,7 @@ static inline DWORD64 cpu_register(struct gdb_context *gdbctx,
 }
 
 static inline void cpu_register_hex_from(struct gdb_context *gdbctx,
-    dbg_ctx_t* ctx, unsigned idx, const char **phex)
+    dbg_ctx_t* ctx, unsigned idx, const char *HOSTPTR *phex)
 {
     const struct gdb_register *cpu_register_map = gdbctx->process->be_cpu->gdb_register_map;
     hex_from(cpu_register_ptr(gdbctx, ctx, idx), *phex, cpu_register_map[idx].length);
@@ -919,7 +949,7 @@ static enum packet_return packet_last_signal(struct gdb_context* gdbctx)
 
 static enum packet_return packet_continue(struct gdb_context* gdbctx)
 {
-    void *addr;
+    void * HOSTPTR addr;
 
     if (sscanf(gdbctx->in_packet, "%p", &addr) == 1)
         FIXME("Continue at address %p not supported\n", addr);
@@ -995,13 +1025,20 @@ static enum packet_return packet_verbose(struct gdb_context* gdbctx)
 
 static enum packet_return packet_continue_signal(struct gdb_context* gdbctx)
 {
-    void *addr;
+    void *addr, * HOSTPTR hostaddr;
     int sig, n;
 
-    if ((n = sscanf(gdbctx->in_packet, "%x;%p", &sig, &addr)) == 2)
-        FIXME("Continue at address %p not supported\n", addr);
+    if ((n = sscanf(gdbctx->in_packet, "%x;%p", &sig, &hostaddr)) == 2)
+        FIXME("Continue at address %p not supported\n", hostaddr);
     if (n < 1) return packet_error;
 
+    /* 32on64 FIXME: Can this happen? */
+#ifdef __i386_on_x86_64__
+    if ((size_t)hostaddr > ~0UL)
+        WINE_FIXME("Address %p out of range\n", hostaddr);
+#endif
+
+    addr = ADDRSPACECAST(void *, hostaddr);
     if (sig != signal_from_debug_event(&gdbctx->de))
     {
         ERR("Changing signals is not supported.\n");
@@ -1022,17 +1059,24 @@ static enum packet_return packet_delete_breakpoint(struct gdb_context* gdbctx)
     struct gdb_xpoint *x;
     dbg_ctx_t ctx;
     char type;
-    void *addr;
+    void *addr, * HOSTPTR hostaddr;
     int size;
 
     if (!process) return packet_error;
     if (!(cpu = process->be_cpu)) return packet_error;
 
-    if (sscanf(gdbctx->in_packet, "%c,%p,%x", &type, &addr, &size) < 3)
+    if (sscanf(gdbctx->in_packet, "%c,%p,%x", &type, &hostaddr, &size) < 3)
         return packet_error;
 
     if (type == '0')
         return packet_error;
+
+    /* 32on64 FIXME: Can this happen? */
+#ifdef __i386_on_x86_64__
+    if ((size_t)hostaddr > ~0UL)
+        WINE_FIXME("Address %p out of range\n", hostaddr);
+#endif
+    addr = ADDRSPACECAST(void *, hostaddr);
 
     LIST_FOR_EACH_ENTRY(thread, &process->threads, struct dbg_thread, entry)
     {
@@ -1064,7 +1108,7 @@ static enum packet_return packet_insert_breakpoint(struct gdb_context* gdbctx)
     struct backend_cpu *cpu;
     dbg_ctx_t ctx;
     char type;
-    void *addr;
+    void *addr, * HOSTPTR hostaddr;
     int size;
 
     if (!process) return packet_error;
@@ -1076,11 +1120,18 @@ static enum packet_return packet_insert_breakpoint(struct gdb_context* gdbctx)
         return packet_error;
     }
 
-    if (sscanf(gdbctx->in_packet, "%c,%p,%x", &type, &addr, &size) < 3)
+    if (sscanf(gdbctx->in_packet, "%c,%p,%x", &type, &hostaddr, &size) < 3)
         return packet_error;
 
     if (type == '0')
         return packet_error;
+
+    /* 32on64 FIXME: Can this happen? */
+#ifdef __i386_on_x86_64__
+    if ((size_t)hostaddr > ~0UL)
+        WINE_FIXME("Address %p out of range\n", hostaddr);
+#endif
+    addr = ADDRSPACECAST(void *, hostaddr);
 
     LIST_FOR_EACH_ENTRY(thread, &process->threads, struct dbg_thread, entry)
     {
@@ -1131,7 +1182,7 @@ static enum packet_return packet_write_registers(struct gdb_context* gdbctx)
     struct dbg_thread *thread = dbg_thread_from_tid(gdbctx, gdbctx->other_tid);
     struct backend_cpu *backend;
     dbg_ctx_t ctx;
-    const char *ptr;
+    const char * HOSTPTR ptr;
     size_t i;
 
     if (!thread) return packet_error;
@@ -1146,7 +1197,7 @@ static enum packet_return packet_write_registers(struct gdb_context* gdbctx)
 
     ptr = gdbctx->in_packet;
     for (i = 0; i < backend->gdb_num_regs; i++)
-        cpu_register_hex_from(gdbctx, &ctx, i, &ptr);
+        cpu_register_hex_from(gdbctx, &ctx, i, (const char* HOSTPTR *)&ptr);
 
     if (!backend->set_context(thread->handle, &ctx))
     {
@@ -1183,7 +1234,7 @@ static enum packet_return packet_thread(struct gdb_context* gdbctx)
 
 static enum packet_return packet_read_memory(struct gdb_context* gdbctx)
 {
-    char               *addr;
+    char * HOSTPTR      addr;
     unsigned int        len, blk_len, nread;
     char                buffer[32];
     SIZE_T              r = 0;
@@ -1211,7 +1262,7 @@ static enum packet_return packet_read_memory(struct gdb_context* gdbctx)
 
 static enum packet_return packet_write_memory(struct gdb_context* gdbctx)
 {
-    char*               addr;
+    char* HOSTPTR       addr;
     unsigned int        len, blk_len;
     char*               ptr;
     char                buffer[32];
@@ -1287,7 +1338,7 @@ static enum packet_return packet_write_register(struct gdb_context* gdbctx)
     struct backend_cpu *backend;
     dbg_ctx_t ctx;
     size_t reg;
-    char *ptr;
+    char* HOSTPTR       ptr;
 
     if (!thread) return packet_error;
     if (!thread->process) return packet_error;
@@ -1313,7 +1364,7 @@ static enum packet_return packet_write_register(struct gdb_context* gdbctx)
 
     TRACE("%zu <= %s\n", reg, debugstr_an(ptr, (int)(gdbctx->in_packet_len - (ptr - gdbctx->in_packet))));
 
-    cpu_register_hex_from(gdbctx, &ctx, reg, (const char**)&ptr);
+    cpu_register_hex_from(gdbctx, &ctx, reg, (const char* HOSTPTR *)&ptr);
     if (!backend->set_context(thread->handle, &ctx))
     {
         ERR("Failed to set context for tid %04x, error %u\n", thread->tid, GetLastError());
@@ -1852,7 +1903,7 @@ static enum packet_return packet_query(struct gdb_context* gdbctx)
             gdbctx->in_packet[15] == ',')
         {
             unsigned    tid;
-            char*       end;
+            char* HOSTPTR end;
             char        result[128];
 
             tid = strtol(gdbctx->in_packet + 16, &end, 16);
@@ -1921,7 +1972,7 @@ static enum packet_return packet_set(struct gdb_context* gdbctx)
 
 static enum packet_return packet_step(struct gdb_context* gdbctx)
 {
-    void *addr;
+    void * HOSTPTR addr;
 
     if (sscanf(gdbctx->in_packet, "%p", &addr) == 1)
         FIXME("Continue at address %p not supported\n", addr);
@@ -1934,7 +1985,7 @@ static enum packet_return packet_step(struct gdb_context* gdbctx)
 
 static enum packet_return packet_thread_alive(struct gdb_context* gdbctx)
 {
-    char*       end;
+    char* HOSTPTR end;
     unsigned    tid;
 
     tid = strtol(gdbctx->in_packet, &end, 16);
@@ -2095,7 +2146,7 @@ static BOOL gdb_exec(unsigned port, unsigned flags)
 {
     char            buf[MAX_PATH];
     int             fd;
-    const char      *gdb_path, *tmp_path;
+    const char      * HOSTPTR gdb_path, * HOSTPTR tmp_path;
     FILE*           f;
 
     if (!(gdb_path = getenv("WINE_GDB"))) gdb_path = "gdb";
@@ -2296,7 +2347,7 @@ int gdb_main(int argc, char* argv[])
 {
 #ifdef HAVE_POLL
     unsigned gdb_flags = 0, port = 0;
-    char *port_end;
+    char * HOSTPTR port_end;
 
     argc--; argv++;
     while (argc > 0 && argv[0][0] == '-')

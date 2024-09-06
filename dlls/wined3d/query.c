@@ -46,7 +46,7 @@ static void wined3d_query_create_buffer_object(struct wined3d_context_gl *contex
     GL_EXTCALL(glGenBuffers(1, &buffer_object));
     GL_EXTCALL(glBindBuffer(GL_QUERY_BUFFER, buffer_object));
     GL_EXTCALL(glBufferStorage(GL_QUERY_BUFFER, sizeof(query->map_ptr[0]) * 2, NULL, map_flags));
-    query->map_ptr = GL_EXTCALL(glMapBufferRange(GL_QUERY_BUFFER, 0, sizeof(query->map_ptr[0]) * 2, map_flags));
+    query->map_ptr = ADDRSPACECAST(void*, GL_EXTCALL(glMapBufferRange(GL_QUERY_BUFFER, 0, sizeof(query->map_ptr[0]) * 2, map_flags)));
     GL_EXTCALL(glBindBuffer(GL_QUERY_BUFFER, 0));
     checkGLcall("query buffer object creation");
 
@@ -427,6 +427,8 @@ ULONG CDECL wined3d_query_incref(struct wined3d_query *query)
 static void wined3d_query_destroy_object(void *object)
 {
     struct wined3d_query *query = object;
+
+    TRACE("query %p.\n", query);
 
     if (!list_empty(&query->poll_list_entry))
         list_remove(&query->poll_list_entry);
@@ -1634,6 +1636,11 @@ static BOOL wined3d_query_vk_issue(struct wined3d_query *query, uint32_t flags)
             wined3d_context_vk_remove_pending_queries(context_vk, query_vk);
         memset((void *)query->data, 0, query->data_size);
         vk_command_buffer = wined3d_context_vk_get_command_buffer(context_vk);
+        if (query_vk->started)
+        {
+            wined3d_query_vk_end(query_vk, context_vk, vk_command_buffer);
+            list_remove(&query_vk->entry);
+        }
         wined3d_query_vk_begin(query_vk, context_vk, vk_command_buffer);
         list_add_head(&context_vk->active_queries, &query_vk->entry);
         query_vk->started = true;

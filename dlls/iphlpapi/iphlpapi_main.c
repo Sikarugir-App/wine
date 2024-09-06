@@ -33,6 +33,9 @@
 #ifdef HAVE_ARPA_NAMESER_H
 # include <arpa/nameser.h>
 #endif
+#ifdef HAVE_DLFCN_H
+# include <dlfcn.h>
+#endif
 #ifdef HAVE_RESOLV_H
 # include <resolv.h>
 #endif
@@ -59,6 +62,7 @@
 
 #include "wine/debug.h"
 #include "wine/unicode.h"
+#include "wine/heap.h"
 
 WINE_DEFAULT_DEBUG_CHANNEL(iphlpapi);
 
@@ -136,18 +140,18 @@ DWORD WINAPI AllocateAndGetIfTableFromStack(PMIB_IFTABLE *ppIfTable,
 }
 
 
-static int IpAddrTableNumericSorter(const void *a, const void *b)
+static int IpAddrTableNumericSorter(const void * HOSTPTR a, const void * HOSTPTR b)
 {
   int ret = 0;
 
   if (a && b)
-    ret = ((const MIB_IPADDRROW*)a)->dwAddr - ((const MIB_IPADDRROW*)b)->dwAddr;
+    ret = ((const MIB_IPADDRROW* HOSTPTR)a)->dwAddr - ((const MIB_IPADDRROW* HOSTPTR)b)->dwAddr;
   return ret;
 }
 
-static int IpAddrTableLoopbackSorter(const void *a, const void *b)
+static int IpAddrTableLoopbackSorter(const void * HOSTPTR a, const void * HOSTPTR b)
 {
-  const MIB_IPADDRROW *left = a, *right = b;
+  const MIB_IPADDRROW * HOSTPTR left = a, * HOSTPTR right = b;
   int ret = 0;
 
   if (isIfIndexLoopback(left->dwIndex))
@@ -844,14 +848,14 @@ static ULONG v4addressesFromIndex(IF_INDEX index, DWORD **addrs, ULONG *num_addr
 
 static char *debugstr_ipv4(const in_addr_t *in_addr, char *buf)
 {
-    const BYTE *addrp;
+    const BYTE * HOSTPTR addrp;
     char *p = buf;
 
-    for (addrp = (const BYTE *)in_addr;
-     addrp - (const BYTE *)in_addr < sizeof(*in_addr);
+    for (addrp = (const BYTE * HOSTPTR)in_addr;
+     addrp - (const BYTE * HOSTPTR)in_addr < sizeof(*in_addr);
      addrp++)
     {
-        if (addrp == (const BYTE *)in_addr + sizeof(*in_addr) - 1)
+        if (addrp == (const BYTE * HOSTPTR)in_addr + sizeof(*in_addr) - 1)
             sprintf(p, "%d", *addrp);
         else
             p += sprintf(p, "%d.", *addrp);
@@ -1300,7 +1304,7 @@ static int get_dns_servers( SOCKADDR_STORAGE *servers, int num, BOOL ip4_only )
     struct __res_state *state = &_res;
     int i, found = 0, total;
     SOCKADDR_STORAGE *addr = servers;
-    union res_sockaddr_union *buf;
+    union res_sockaddr_union * WIN32PTR buf;
 
     initialise_resolver();
 
@@ -1375,17 +1379,29 @@ static int get_dns_servers( SOCKADDR_STORAGE *servers, int num, BOOL ip4_only )
 
 static int get_dns_servers( SOCKADDR_STORAGE *servers, int num, BOOL ip4_only )
 {
-    extern struct res_state *__res_get_state( void );
-    extern int __res_getservers( struct res_state *, struct sockaddr_storage *, int );
-    struct res_state *state = __res_get_state();
-    int i, found = 0, total = __res_getservers( state, NULL, 0 );
+    struct res_state * (*p__res_get_state)( void );
+    int (*p__res_getservers)( struct res_state *, struct sockaddr_storage *, int );
+    struct res_state *state;
+    int i, found = 0, total;
     SOCKADDR_STORAGE *addr = servers;
     struct sockaddr_storage *buf;
+
+    p__res_get_state = dlsym( RTLD_DEFAULT, "__res_get_state" );
+    p__res_getservers = dlsym( RTLD_DEFAULT, "__res_getservers" );
+
+    if (!p__res_get_state || !p__res_getservers)
+    {
+        WARN( "__res_get_state or __res_getservers functions are missing\n" );
+        return 0;
+    }
+
+    state = p__res_get_state();
+    total = p__res_getservers( state, NULL, 0 );
 
     if ((!servers || !num) && !ip4_only) return total;
 
     buf = HeapAlloc( GetProcessHeap(), 0, total * sizeof(struct sockaddr_storage) );
-    total = __res_getservers( state, buf, total );
+    total = p__res_getservers( state, buf, total );
 
     for (i = 0; i < total; i++)
     {
@@ -1456,7 +1472,7 @@ static ULONG get_dns_server_addresses(PIP_ADAPTER_DNS_SERVER_ADDRESS address, UL
 }
 
 #ifdef HAVE_STRUCT___RES_STATE
-static BOOL is_ip_address_string(const char *str)
+static BOOL is_ip_address_string(const char * HOSTPTR str)
 {
     struct in_addr in;
     int ret;
@@ -1469,7 +1485,7 @@ static BOOL is_ip_address_string(const char *str)
 static ULONG get_dns_suffix(WCHAR *suffix, ULONG *len)
 {
     ULONG size;
-    const char *found_suffix = "";
+    const char * HOSTPTR found_suffix = "", *copy;
     /* Always return a NULL-terminated string, even if it's empty. */
 
 #ifdef HAVE_STRUCT___RES_STATE
@@ -1487,13 +1503,16 @@ static ULONG get_dns_suffix(WCHAR *suffix, ULONG *len)
     }
 #endif
 
-    size = MultiByteToWideChar( CP_UNIXCP, 0, found_suffix, -1, NULL, 0 ) * sizeof(WCHAR);
+    copy = heap_strdup(found_suffix);
+    size = MultiByteToWideChar( CP_UNIXCP, 0, copy, -1, NULL, 0 ) * sizeof(WCHAR);
     if (!suffix || *len < size)
     {
         *len = size;
+        heap_free((void *)copy);
         return ERROR_BUFFER_OVERFLOW;
     }
-    *len = MultiByteToWideChar( CP_UNIXCP, 0, found_suffix, -1, suffix, *len / sizeof(WCHAR) ) * sizeof(WCHAR);
+    *len = MultiByteToWideChar( CP_UNIXCP, 0, copy, -1, suffix, *len / sizeof(WCHAR) ) * sizeof(WCHAR);
+    heap_free((void *)copy);
     return ERROR_SUCCESS;
 }
 
@@ -1821,12 +1840,12 @@ DWORD WINAPI GetIfEntry2( MIB_IF_ROW2 *row2 )
     return NO_ERROR;
 }
 
-static int IfTableSorter(const void *a, const void *b)
+static int IfTableSorter(const void * HOSTPTR a, const void * HOSTPTR b)
 {
   int ret;
 
   if (a && b)
-    ret = ((const MIB_IFROW*)a)->dwIndex - ((const MIB_IFROW*)b)->dwIndex;
+    ret = ((const MIB_IFROW* HOSTPTR)a)->dwIndex - ((const MIB_IFROW* HOSTPTR)b)->dwIndex;
   else
     ret = 0;
   return ret;

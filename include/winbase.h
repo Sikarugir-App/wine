@@ -19,7 +19,10 @@
 #ifndef __WINE_WINBASE_H
 #define __WINE_WINBASE_H
 
+#include "wine/winheader_enter.h"
+
 #include <winerror.h>
+#include <wine/asm.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -2847,9 +2850,26 @@ static inline LPSTR WINAPI lstrcpynA( LPSTR dst, LPCSTR src, INT n )
     return dst;
 }
 
-static inline INT WINAPI lstrlenW( LPCWSTR str )
+#ifdef __i386_on_x86_64__
+static inline char* HOSTPTR WINAPI lstrcpynA( char* HOSTPTR dst, const char* HOSTPTR src, INT n ) __attribute__((overloadable))
 {
-    const WCHAR *s = str;
+    char* HOSTPTR d = dst;
+    const char* HOSTPTR s = src;
+    UINT count = n;
+
+    while ((count > 1) && *s)
+    {
+        count--;
+        *d++ = *s++;
+    }
+    if (count) *d = 0;
+    return dst;
+}
+#endif
+
+static inline INT WINAPI lstrlenW( const WCHAR * HOSTPTR str )
+{
+    const WCHAR * HOSTPTR s = str;
     while (*s) s++;
     return s - str;
 }
@@ -2868,7 +2888,8 @@ static inline LPWSTR WINAPI lstrcpyW( LPWSTR dst, LPCWSTR src )
 
 static inline LPSTR WINAPI lstrcpyA( LPSTR dst, LPCSTR src )
 {
-    return strcpy( dst, src );
+    strcpy( dst, src );
+    return dst;
 }
 
 static inline LPWSTR WINAPI lstrcatW( LPWSTR dst, LPCWSTR src )
@@ -2881,7 +2902,8 @@ static inline LPWSTR WINAPI lstrcatW( LPWSTR dst, LPCWSTR src )
 
 static inline LPSTR WINAPI lstrcatA( LPSTR dst, LPCSTR src )
 {
-    return strcat( dst, src );
+    strcat( dst, src );
+    return dst;
 }
 
 /* strncpy doesn't do what you think, don't use it */
@@ -2994,7 +3016,7 @@ static FORCEINLINE void *WINAPI InterlockedExchangePointer( void *volatile *dest
 
 #elif defined(__GNUC__)
 
-static FORCEINLINE LONG WINAPI InterlockedCompareExchange( LONG volatile *dest, LONG xchg, LONG compare )
+static FORCEINLINE LONG WINAPI InterlockedCompareExchange( LONG volatile * HOSTPTR dest, LONG xchg, LONG compare )
 {
     return __sync_val_compare_and_swap( dest, compare, xchg );
 }
@@ -3003,16 +3025,22 @@ static FORCEINLINE PVOID WINAPI InterlockedCompareExchangePointer( PVOID volatil
 {
     return __sync_val_compare_and_swap( dest, compare, xchg );
 }
+#if defined(__i386_on_x86_64__)
+static FORCEINLINE void * HOSTPTR WINAPI InterlockedCompareExchangePointer( void * HOSTPTR volatile * HOSTPTR dest, void * HOSTPTR xchg, void * HOSTPTR compare ) __attribute__((overloadable))
+{
+    return __sync_val_compare_and_swap( dest, compare, xchg );
+}
+#endif
 
 static FORCEINLINE LONGLONG WINAPI InterlockedCompareExchange64( LONGLONG volatile *dest, LONGLONG xchg, LONGLONG compare )
 {
     return __sync_val_compare_and_swap( dest, compare, xchg );
 }
 
-static FORCEINLINE LONG WINAPI InterlockedExchange( LONG volatile *dest, LONG val )
+static FORCEINLINE LONG WINAPI InterlockedExchange( LONG volatile * HOSTPTR dest, LONG val )
 {
     LONG ret;
-#if defined(__i386__) || defined(__x86_64__)
+#if defined(__i386__) || defined(__x86_64__) || defined(__i386_on_x86_64__)
     __asm__ __volatile__( "lock; xchgl %0,(%1)"
                           : "=r" (ret) :"r" (dest), "0" (val) : "memory" );
 #else
@@ -3021,17 +3049,17 @@ static FORCEINLINE LONG WINAPI InterlockedExchange( LONG volatile *dest, LONG va
     return ret;
 }
 
-static FORCEINLINE LONG WINAPI InterlockedExchangeAdd( LONG volatile *dest, LONG incr )
+static FORCEINLINE LONG WINAPI InterlockedExchangeAdd( LONG volatile * HOSTPTR dest, LONG incr )
 {
     return __sync_fetch_and_add( dest, incr );
 }
 
-static FORCEINLINE LONG WINAPI InterlockedIncrement( LONG volatile *dest )
+static FORCEINLINE LONG WINAPI InterlockedIncrement( LONG volatile * HOSTPTR dest )
 {
     return __sync_add_and_fetch( dest, 1 );
 }
 
-static FORCEINLINE LONG WINAPI InterlockedDecrement( LONG volatile *dest )
+static FORCEINLINE LONG WINAPI InterlockedDecrement( LONG volatile * HOSTPTR dest )
 {
     return __sync_add_and_fetch( dest, -1 );
 }
@@ -3039,7 +3067,9 @@ static FORCEINLINE LONG WINAPI InterlockedDecrement( LONG volatile *dest )
 static FORCEINLINE PVOID WINAPI InterlockedExchangePointer( PVOID volatile *dest, PVOID val )
 {
     PVOID ret;
-#ifdef __x86_64__
+#if defined(__i386_on_x86_64__)
+    __asm__ __volatile__( "lock; xchgl %0,(%1)" : "=r" (ret) :"r" (dest), "0" (val) : "memory" );
+#elif defined(__x86_64__)
     __asm__ __volatile__( "lock; xchgq %0,(%1)" : "=r" (ret) :"r" (dest), "0" (val) : "memory" );
 #elif defined(__i386__)
     __asm__ __volatile__( "lock; xchgl %0,(%1)" : "=r" (ret) :"r" (dest), "0" (val) : "memory" );
@@ -3048,6 +3078,14 @@ static FORCEINLINE PVOID WINAPI InterlockedExchangePointer( PVOID volatile *dest
 #endif
     return ret;
 }
+#if defined(__i386_on_x86_64__)
+static FORCEINLINE void * HOSTPTR WINAPI InterlockedExchangePointer( PVOID volatile * HOSTPTR dest, void * HOSTPTR val ) __attribute__((overloadable))
+{
+    void * HOSTPTR ret;
+    __asm__ __volatile__( "lock; xchgq %0,(%1)" : "=r" (ret) :"r" (dest), "0" (val) : "memory" );
+    return ret;
+}
+#endif
 
 #endif  /* __GNUC__ */
 
@@ -3128,5 +3166,7 @@ BOOL WINAPI DllMain( HINSTANCE hinst, DWORD reason, LPVOID reserved ) DECLSPEC_H
 #ifdef __cplusplus
 }
 #endif
+
+#include "wine/winheader_exit.h"
 
 #endif  /* __WINE_WINBASE_H */

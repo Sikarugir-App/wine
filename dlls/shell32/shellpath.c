@@ -57,8 +57,6 @@
 
 WINE_DEFAULT_DEBUG_CHANNEL(shell);
 
-static const BOOL is_win64 = sizeof(void *) > sizeof(int);
-
 /*
 	########## Combining and Constructing paths ##########
 */
@@ -3462,6 +3460,21 @@ static HRESULT _SHGetUserShellFolderPath(HKEY rootKey, LPCWSTR userPrefix,
     return hr;
 }
 
+/* CrossOver HACK: Load an English string to work around restoring bottles
+ * with non-US-ASCII characters, which doesn't work when the locale has
+ * changed */
+static inline INT LoadStringW_English( HINSTANCE instance, UINT resource_id,
+                            LPWSTR buffer, INT buflen )
+{
+	INT ret;
+	LCID lcid = GetThreadLocale();
+	SetThreadLocale(MAKELCID(MAKELANGID(LANG_ENGLISH,SUBLANG_DEFAULT),SORT_DEFAULT));
+	ret = LoadStringW(instance, resource_id, buffer, buflen);
+	SetThreadLocale(lcid);
+	return ret;
+}
+
+
 /* Gets a 'semi-expanded' default value of the CSIDL with index folder into
  * pszPath, based on the entries in CSIDL_Data.  By semi-expanded, I mean:
  * - The entry's szDefaultPath may be either a string value or an integer
@@ -3490,7 +3503,7 @@ static HRESULT _SHGetDefaultValue(BYTE folder, LPWSTR pszPath)
     if (!pszPath)
         return E_INVALIDARG;
 
-    if (!is_win64)
+    if (!wine_is_64bit())
     {
         BOOL is_wow64;
 
@@ -3512,7 +3525,7 @@ static HRESULT _SHGetDefaultValue(BYTE folder, LPWSTR pszPath)
     if (CSIDL_Data[folder].szDefaultPath &&
      IS_INTRESOURCE(CSIDL_Data[folder].szDefaultPath))
     {
-        if (LoadStringW(shell32_hInstance,
+        if (LoadStringW_English(shell32_hInstance,
          LOWORD(CSIDL_Data[folder].szDefaultPath), resourcePath, MAX_PATH))
         {
             hr = S_OK;
@@ -3602,7 +3615,7 @@ static HRESULT _SHGetCurrentVersionPath(DWORD dwFlags, BYTE folder,
                 case CSIDL_PROGRAM_FILESX86:
                 case CSIDL_PROGRAM_FILES_COMMONX86:
                     /* these two should never be set on 32-bit setups */
-                    if (!is_win64)
+                    if (!wine_is_64bit())
                     {
                         BOOL is_wow64;
                         IsWow64Process( GetCurrentProcess(), &is_wow64 );
@@ -3915,11 +3928,10 @@ static HRESULT _SHExpandEnvironmentStrings(LPCWSTR szSrc, LPWSTR szDest)
         }
         else if (!strncmpiW(szTemp, UserProfileW, strlenW(UserProfileW)))
         {
-            WCHAR userName[MAX_PATH];
-            DWORD userLen = MAX_PATH;
+            /* CrossOver Hack 12735 */
+            static const WCHAR userName[] = {'c','r','o','s','s','o','v','e','r',0};
 
             strcpyW(szDest, szProfilesPrefix);
-            GetUserNameW(userName, &userLen);
             PathAppendW(szDest, userName);
             PathAppendW(szDest, szTemp + strlenW(UserProfileW));
         }
@@ -4113,7 +4125,7 @@ static void _SHCreateMyDocumentsSymbolicLink(const UINT * aidsMyStuff, const UIN
     static const unsigned int num = ARRAY_SIZE(xdg_dirs);
     char szPersonalTarget[FILENAME_MAX], *pszPersonal;
     struct stat statFolder;
-    const char *pszHome;
+    const char * HOSTPTR pszHome;
     char ** xdg_results;
 
     /* Get the unix path of 'My Documents'. */
@@ -4122,7 +4134,11 @@ static void _SHCreateMyDocumentsSymbolicLink(const UINT * aidsMyStuff, const UIN
 
     _SHGetXDGUserDirs(xdg_dirs, num, &xdg_results);
 
+#ifndef __ANDROID__
     pszHome = getenv("HOME");
+#else
+    pszHome = "/sdcard/Download";
+#endif
     if (pszHome && !stat(pszHome, &statFolder) && S_ISDIR(statFolder.st_mode))
     {
         while (1)
@@ -4207,7 +4223,7 @@ static void _SHCreateMyStuffSymbolicLink(int nFolder)
     char szPersonalTarget[FILENAME_MAX], *pszPersonal;
     char szMyStuffTarget[FILENAME_MAX], *pszMyStuff;
     struct stat statFolder;
-    const char *pszHome;
+    const char * HOSTPTR pszHome;
     char ** xdg_results;
     DWORD folder = nFolder & CSIDL_FOLDER_MASK;
     UINT i;
@@ -4229,7 +4245,11 @@ static void _SHCreateMyStuffSymbolicLink(int nFolder)
 
     _SHGetXDGUserDirs(xdg_dirs, num, &xdg_results);
 
+#ifndef __ANDROID__
     pszHome = getenv("HOME");
+#else
+    pszHome = "/sdcard/Download";
+#endif
 
     while (1)
     {
@@ -4282,12 +4302,17 @@ static void _SHCreateMyStuffSymbolicLink(int nFolder)
  */
 static void _SHCreateDesktopSymbolicLink(void)
 {
+#ifdef __ANDROID__
+    static const WCHAR DownloadW[] = {'D','o','w','n','l','o','a','d','\0'};
+    char target[FILENAME_MAX], link[FILENAME_MAX], *favorites;
+    char *pszDownloads;
+#endif
     static const char * const xdg_dirs[] = { "DESKTOP" };
     static const unsigned int num = ARRAY_SIZE(xdg_dirs);
     char *pszPersonal;
     char szDesktopTarget[FILENAME_MAX], *pszDesktop;
     struct stat statFolder;
-    const char *pszHome;
+    const char * HOSTPTR pszHome;
     char ** xdg_results;
     char * xdg_desktop_dir;
 
@@ -4297,8 +4322,31 @@ static void _SHCreateDesktopSymbolicLink(void)
 
     _SHGetXDGUserDirs(xdg_dirs, num, &xdg_results);
 
+#ifndef __ANDROID__
     pszHome = getenv("HOME");
+#else
+    pszHome = "/sdcard/Download";
+#endif
 
+#ifdef __ANDROID__
+    /* Downloads folder for Android */
+    pszDownloads = _SHGetFolderUnixPath( CSIDL_DOWNLOADS|CSIDL_FLAG_CREATE );
+    if (pszDownloads)
+    {
+        remove(pszDownloads);
+        symlink("/sdcard/Download", pszDownloads);
+        HeapFree(GetProcessHeap(), 0, pszDownloads);
+    }
+#endif
+
+    if (getenv("CX_DIRECT_DESKTOP"))
+    {
+    /* Link the Desktop folder to the native one like in vanilla Wine.
+     * Note that this means .lnk files will be created on the user's native
+     * desktop, next to the corresponding .desktop file on Linux. They will
+     * also not be part of the bottle and will thus not be deleted, archived
+     * or packaged with it.
+     */
     if (pszHome)
         strcpy(szDesktopTarget, pszHome);
     else
@@ -4306,6 +4354,10 @@ static void _SHCreateDesktopSymbolicLink(void)
     heap_free(pszPersonal);
 
     xdg_desktop_dir = xdg_results ? xdg_results[0] : NULL;
+#ifdef __ANDROID__
+    if (!xdg_desktop_dir)
+        xdg_desktop_dir = "/sdcard/Download";
+#endif
     if (xdg_desktop_dir ||
         (_SHAppendToUnixPath(szDesktopTarget, DesktopW) &&
         !stat(szDesktopTarget, &statFolder) && S_ISDIR(statFolder.st_mode)))
@@ -4320,6 +4372,93 @@ static void _SHCreateDesktopSymbolicLink(void)
             heap_free(pszDesktop);
         }
     }
+    }
+    else
+    {
+        /* CrossOver Hack 12791:
+         * Create the Desktop folder and put a link to the native one inside.
+         */
+        xdg_desktop_dir = xdg_results ? xdg_results[0] : NULL;
+#ifdef __ANDROID__
+        if (!xdg_desktop_dir)
+            xdg_desktop_dir = "/sdcard/Download";
+#endif
+        pszDesktop = _SHGetFolderUnixPath( CSIDL_DESKTOPDIRECTORY|CSIDL_FLAG_DONT_VERIFY );
+        if (pszHome && pszDesktop)
+        {
+#           define szLinuxDesktop  "/My Linux Desktop"
+#           define szMacDesktop    "/My Mac Desktop"
+#           define szNativeDesktop "/My Native Desktop"
+#           define szAndroidDesktop "/My Android Downloads"
+            static const char* szDesktops[] = {szAndroidDesktop, szLinuxDesktop, szMacDesktop,
+                                               szNativeDesktop, NULL};
+            const char* pszNativeDesktop;
+            int i;
+#ifdef __ANDROID__
+            pszNativeDesktop = szAndroidDesktop;
+#elif defined(linux)
+            pszNativeDesktop = szLinuxDesktop;
+#elif defined(__APPLE__)
+            pszNativeDesktop = szMacDesktop;
+#else
+            pszNativeDesktop = szNativeDesktop;
+#endif
+            for (i=0; szDesktops[i]; i++)
+            {
+                char * pszDesktopLink = HeapAlloc(GetProcessHeap(), 0, strlen(pszDesktop) + strlen(szDesktops[i])+1);
+                strcpy(pszDesktopLink, pszDesktop);
+                strcat(pszDesktopLink, szDesktops[i]);
+                rmdir(pszDesktopLink);
+                if (stat(pszDesktopLink, &statFolder) ||
+                    !S_ISDIR(statFolder.st_mode) ||
+                    statFolder.st_uid != geteuid())
+                {
+                    /* Delete the other platforms' links */
+                    unlink(pszDesktopLink);
+                    if (strcmp(szDesktops[i], pszNativeDesktop) != 0)
+                        continue;
+
+                    /* And create one for the current platform */
+                    if (xdg_desktop_dir)
+                        symlink(xdg_desktop_dir, pszDesktopLink);
+                    else
+                    {
+                        strcpy(szDesktopTarget, pszHome);
+                        if (_SHAppendToUnixPath(szDesktopTarget, DesktopW) &&
+                            !stat(szDesktopTarget, &statFolder) &&
+                            S_ISDIR(statFolder.st_mode))
+                            symlink(szDesktopTarget, pszDesktopLink);
+                    }
+                }
+                HeapFree(GetProcessHeap(), 0, pszDesktopLink);
+            }
+            HeapFree(GetProcessHeap(), 0, pszDesktop);
+        }
+    }
+
+#ifdef __ANDROID__
+    hr = SHGetFolderPathW(NULL, CSIDL_FAVORITES|CSIDL_FLAG_CREATE, NULL,
+                          SHGFP_TYPE_DEFAULT, wszTempPath);
+    if (SUCCEEDED(hr) && (favorites = wine_get_unix_file_name(wszTempPath)))
+    {
+#define CREATE_SYMLINK(name) \
+        strcpy(target, pszHome); \
+        strcpy(link, favorites); \
+        if (_SHAppendToUnixPath(target, name) && _SHAppendToUnixPath(link, name)) \
+        { \
+            FIXME( "%s -> %s\n", debugstr_a(link), debugstr_a(target) ); \
+            symlink(target, link); \
+        }
+
+        CREATE_SYMLINK(DocumentsW)
+        CREATE_SYMLINK(PicturesW)
+        CREATE_SYMLINK(MusicW)
+        CREATE_SYMLINK(MoviesW)
+        CREATE_SYMLINK(DownloadW)
+        CREATE_SYMLINK(DesktopW)
+#undef CREATE_SYMLINK
+    }
+#endif
 
     _SHFreeXDGUserDirs(num, xdg_results);
 }
@@ -4826,6 +4965,12 @@ static HRESULT _SHRegisterCommonShellFolders(void)
      szSHFolders, folders, ARRAY_SIZE(folders));
     TRACE("returning 0x%08x\n", hr);
     return hr;
+}
+
+void WINAPI wine_update_symbolic_links(HWND hwnd, HINSTANCE handle, LPCWSTR cmdline, INT show)
+{
+    TRACE("\n");
+    _SHCreateSymbolicLinks();
 }
 
 /******************************************************************************

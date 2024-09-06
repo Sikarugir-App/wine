@@ -8,6 +8,9 @@
 #ifndef __WINE_STDIO_H
 #define __WINE_STDIO_H
 
+
+#include "wine/winheader_enter.h"
+
 #include <corecrt_wstdio.h>
 
 /* file._flag flags */
@@ -53,7 +56,7 @@ extern "C" {
 #endif
 
 #ifndef _STDIO_DEFINED
-# ifdef __i386__
+# if defined(__i386__) || defined(__i386_on_x86_64__)
 _ACRTIMP FILE* __cdecl __p__iob(void);
 #  define _iob (__p__iob())
 # else
@@ -402,7 +405,19 @@ _ACRTIMP int __cdecl vsprintf(char*,const char*,__ms_va_list);
 _ACRTIMP int __cdecl vsprintf_s(char*,size_t,const char*,__ms_va_list);
 
 _ACRTIMP int __cdecl _vsnprintf(char*,size_t,const char*,__ms_va_list);
+#ifdef __i386_on_x86_64__
+_ACRTIMP int __cdecl _vsnprintf(char* HOSTPTR,size_t,const char* HOSTPTR,__ms_va_list) __attribute__((overloadable)) asm(__ASM_NAME("wine__vsnprintf_HOSTPTR"));
+#endif
+
 static inline int vsnprintf(char *buffer, size_t size, const char *format, __ms_va_list args) { return _vsnprintf(buffer,size,format,args); }
+
+/* 32on64 FIXME: Did I put this in the right place? */
+#ifdef __i386_on_x86_64__
+static inline int vsnprintf(char * HOSTPTR buffer, size_t size, const char * HOSTPTR format, __ms_va_list args) __attribute__((overloadable))
+{
+    return _vsnprintf(buffer,size,format,args);
+}
+#endif
 
 _ACRTIMP int WINAPIV _snscanf_l(const char*,size_t,const char*,_locale_t,...);
 _ACRTIMP int WINAPIV fscanf(FILE*,const char*,...);
@@ -481,5 +496,7 @@ static inline wint_t fputwchar(wint_t wc) { return _fputwchar(wc); }
 static inline int getw(FILE* file) { return _getw(file); }
 static inline int putw(int val, FILE* file) { return _putw(val, file); }
 static inline FILE* wpopen(const wchar_t* command,const wchar_t* mode) { return _wpopen(command, mode); }
+
+#include "wine/winheader_exit.h"
 
 #endif /* __WINE_STDIO_H */

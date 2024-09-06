@@ -19,6 +19,8 @@
 #ifndef __WINE_WINCON_H
 #define __WINE_WINCON_H
 
+#include "wine/winheader_enter.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -129,7 +131,7 @@ typedef struct _CONSOLE_SELECTION_INFO
 
 #define CONSOLE_TEXTMODE_BUFFER  1
 
-#if defined(__i386__) && !defined(__MINGW32__) && !defined(_MSC_VER)
+#if (defined(__i386__) || defined(__i386_on_x86_64__)) && !defined(__MINGW32__) && !defined(_MSC_VER)
 /* Note: this should return a COORD, but calling convention for returning
  * structures is different between Windows and gcc on i386. */
 
@@ -158,10 +160,10 @@ static inline COORD __wine_GetLargestConsoleWindowSize_wrapper(HANDLE h)
 }
 #define GetLargestConsoleWindowSize(h) __wine_GetLargestConsoleWindowSize_wrapper(h)
 
-#else  /* __i386__ */
+#else  /* __i386__ || __i386_on_x86_64__ */
 WINBASEAPI COORD WINAPI GetConsoleFontSize(HANDLE, DWORD);
 WINBASEAPI COORD WINAPI GetLargestConsoleWindowSize(HANDLE);
-#endif  /* __i386__ */
+#endif  /* __i386__ || __i386_on_x86_64__ */
 
 WINBASEAPI BOOL   WINAPI AddConsoleAliasA(LPSTR,LPSTR,LPSTR);
 WINBASEAPI BOOL   WINAPI AddConsoleAliasW(LPWSTR,LPWSTR,LPWSTR);
@@ -251,5 +253,7 @@ WINBASEAPI BOOL WINAPI   WriteConsoleOutputCharacterW(HANDLE,LPCWSTR,DWORD,COORD
 #ifdef __cplusplus
 }
 #endif
+
+#include "wine/winheader_exit.h"
 
 #endif  /* __WINE_WINCON_H */

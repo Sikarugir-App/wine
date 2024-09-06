@@ -94,6 +94,16 @@ static void pthread_exit_wrapper( int status )
     close( ntdll_get_thread_data()->wait_fd[1] );
     close( ntdll_get_thread_data()->reply_fd );
     close( ntdll_get_thread_data()->request_fd );
+
+#if defined(__APPLE__) && defined(__x86_64__) && !defined(__i386_on_x86_64__)
+    /* Remove the PEB from the localtime field in %gs, or MacOS might try
+     * to free() the pointer and crash. That happens for processes that are
+     * using the alt loader for dock integration. */
+    __asm__ volatile (".byte 0x65\n\tmovq %q0,%c1"
+                      :
+                      : "r" (NULL), "n" (FIELD_OFFSET(TEB, Peb)));
+#endif
+
     pthread_exit( UIntToPtr(status) );
 }
 
@@ -103,9 +113,10 @@ static void pthread_exit_wrapper( int status )
  *
  * Startup routine for a newly created thread.
  */
-static void start_thread( TEB *teb )
+static void start_thread( void * HOSTPTR arg )
 {
-    struct ntdll_thread_data *thread_data = (struct ntdll_thread_data *)&teb->GdiTebBatch;
+    TEB *teb = ADDRSPACECAST(void *, arg);
+    struct ntdll_thread_data * HOSTPTR thread_data = (struct ntdll_thread_data * HOSTPTR)&teb->GdiTebBatch;
     struct debug_info debug_info;
     BOOL suspend;
 
@@ -114,6 +125,17 @@ static void start_thread( TEB *teb )
     thread_data->pthread_id = pthread_self();
     signal_init_thread( teb );
     server_init_thread( thread_data->start, &suspend );
+#if defined(__APPLE__) && defined(__x86_64__) && !defined(__i386_on_x86_64__)
+    /* Preallocate TlsExpansionSlots for secondary threads.  Otherwise, kernelbase will
+       allocate it on demand, but won't be able to do the Mac-specific poking to the
+       %gs-relative address. */
+    if (!teb->TlsExpansionSlots)
+        teb->TlsExpansionSlots = RtlAllocateHeap( GetProcessHeap(), HEAP_ZERO_MEMORY,
+                                                  8 * sizeof(teb->Peb->TlsExpansionBitmapBits) * sizeof(void*) );
+    __asm__ volatile ("movq %0,%%gs:%c1"
+                      :
+                      : "r" (teb->TlsExpansionSlots), "n" (FIELD_OFFSET(TEB, TlsExpansionSlots)));
+#endif
     signal_start_thread( thread_data->start, thread_data->param, suspend, pLdrInitializeThunk, teb );
 }
 
@@ -157,7 +179,7 @@ NTSTATUS WINAPI NtCreateThreadEx( HANDLE *handle, ACCESS_MASK access, OBJECT_ATT
     pthread_t pthread_id;
     pthread_attr_t pthread_attr;
     data_size_t len;
-    struct object_attributes *objattr;
+    struct object_attributes * HOSTPTR objattr;
     struct ntdll_thread_data *thread_data;
     DWORD tid = 0;
     int request_pipe[2];
@@ -258,7 +280,7 @@ NTSTATUS WINAPI NtCreateThreadEx( HANDLE *handle, ACCESS_MASK access, OBJECT_ATT
     pthread_attr_setguardsize( &pthread_attr, 0 );
     pthread_attr_setscope( &pthread_attr, PTHREAD_SCOPE_SYSTEM ); /* force creating a kernel thread */
     InterlockedIncrement( &nb_threads );
-    if (pthread_create( &pthread_id, &pthread_attr, (void * (*)(void *))start_thread, teb ))
+    if (pthread_create( &pthread_id, &pthread_attr, (void * HOSTPTR (* HOSTPTR)(void * HOSTPTR))start_thread, teb ))
     {
         InterlockedDecrement( &nb_threads );
         virtual_free_teb( teb );
@@ -322,6 +344,11 @@ static void exit_thread( int status )
     signal_exit_thread( status, pthread_exit_wrapper );
 }
 
+static void exit_wrapper (int ret)
+{
+    exit(ret);
+}
+
 
 /***********************************************************************
  *           exit_process
@@ -329,7 +356,7 @@ static void exit_thread( int status )
 void exit_process( int status )
 {
     pthread_sigmask( SIG_BLOCK, &server_block_set, NULL );
-    signal_exit_thread( get_unix_exit_code( status ), exit );
+    signal_exit_thread( get_unix_exit_code( status ), exit_wrapper );
 }
 
 
@@ -428,7 +455,7 @@ NTSTATUS WINAPI NtRaiseException( EXCEPTION_RECORD *rec, CONTEXT *context, BOOL 
     NTSTATUS status = send_debug_event( rec, context, first_chance );
 
     if (status == DBG_CONTINUE || status == DBG_EXCEPTION_HANDLED)
-        NtSetContextThread( GetCurrentThread(), context );
+        return NtContinue( context, FALSE );
 
     if (first_chance) call_user_exception_dispatcher( rec, context, pKiUserExceptionDispatcher );
 
@@ -993,6 +1020,7 @@ NTSTATUS WINAPI NtQueryInformationThread( HANDLE handle, THREADINFOCLASS class,
     }
 
     case ThreadDescriptorTableEntry:
+        /* 32on64 FIXME: This code was touched previously. Looks like it got moved to signal_32on64. */
         return get_thread_ldt_entry( handle, data, length, ret_len );
 
     case ThreadAmILastThread:

@@ -24,6 +24,7 @@
 #include "config.h"
 #include "wine/port.h"
 
+#include <assert.h>
 #include <stdarg.h>
 #ifdef HAVE_UNISTD_H
 #include <unistd.h>
@@ -67,8 +68,8 @@ static CRITICAL_SECTION_DEBUG init_tiff_cs_debug =
 };
 static CRITICAL_SECTION init_tiff_cs = { &init_tiff_cs_debug, -1, 0, 0, 0, 0 };
 
-static void *libtiff_handle;
-#define MAKE_FUNCPTR(f) static typeof(f) * p##f
+static void * HOSTPTR libtiff_handle;
+#define MAKE_FUNCPTR(f) static typeof(f) * HOSTPTR p##f
 MAKE_FUNCPTR(TIFFClientOpen);
 MAKE_FUNCPTR(TIFFClose);
 MAKE_FUNCPTR(TIFFCurrentDirOffset);
@@ -84,17 +85,17 @@ MAKE_FUNCPTR(TIFFWriteDirectory);
 MAKE_FUNCPTR(TIFFWriteScanline);
 #undef MAKE_FUNCPTR
 
-static void *load_libtiff(void)
+static void * HOSTPTR load_libtiff(void)
 {
-    void *result;
+    void * HOSTPTR result;
 
     RtlEnterCriticalSection(&init_tiff_cs);
 
     if (!libtiff_handle &&
         (libtiff_handle = dlopen(SONAME_LIBTIFF, RTLD_NOW)) != NULL)
     {
-        void * (*pTIFFSetWarningHandler)(void *);
-        void * (*pTIFFSetWarningHandlerExt)(void *);
+        void * HOSTPTR (* HOSTPTR pTIFFSetWarningHandler)(void * HOSTPTR);
+        void * HOSTPTR (* HOSTPTR pTIFFSetWarningHandlerExt)(void * HOSTPTR);
 
 #define LOAD_FUNCPTR(f) \
     if((p##f = dlsym(libtiff_handle, #f)) == NULL) { \
@@ -132,7 +133,7 @@ static void *load_libtiff(void)
 
 static tsize_t tiff_stream_read(thandle_t client_data, tdata_t data, tsize_t size)
 {
-    IStream *stream = (IStream*)client_data;
+    IStream *stream = ADDRSPACECAST(IStream *, client_data);
     ULONG bytes_read;
     HRESULT hr;
 
@@ -143,8 +144,8 @@ static tsize_t tiff_stream_read(thandle_t client_data, tdata_t data, tsize_t siz
 
 static tsize_t tiff_stream_write(thandle_t client_data, tdata_t data, tsize_t size)
 {
-    IStream *stream = (IStream*)client_data;
-    ULONG bytes_written;
+    IStream *stream = (IStream*)ADDRSPACECAST(void *, client_data);
+    ULONG bytes_written = 0;
     HRESULT hr;
 
     hr = stream_write(stream, data, size, &bytes_written);
@@ -154,7 +155,7 @@ static tsize_t tiff_stream_write(thandle_t client_data, tdata_t data, tsize_t si
 
 static toff_t tiff_stream_seek(thandle_t client_data, toff_t offset, int whence)
 {
-    IStream *stream = (IStream*)client_data;
+    IStream *stream = ADDRSPACECAST(IStream *, client_data);
     DWORD origin;
     ULONGLONG new_position;
     HRESULT hr;
@@ -188,7 +189,7 @@ static int tiff_stream_close(thandle_t client_data)
 
 static toff_t tiff_stream_size(thandle_t client_data)
 {
-    IStream *stream = (IStream*)client_data;
+    IStream *stream = ADDRSPACECAST(IStream *, client_data);
     ULONGLONG size;
     HRESULT hr;
 
@@ -701,7 +702,7 @@ static HRESULT tiff_decoder_select_frame(struct tiff_decoder* This, DWORD frame)
         This->cached_frame = frame;
         if (This->cached_decode_info.tile_size > prev_tile_size)
         {
-            free(This->cached_tile);
+            RtlFreeHeap(GetProcessHeap(), 0, This->cached_tile);
             This->cached_tile = NULL;
         }
     }
@@ -709,7 +710,7 @@ static HRESULT tiff_decoder_select_frame(struct tiff_decoder* This, DWORD frame)
     {
         /* Set an invalid value to ensure we'll refresh cached_decode_info before using it. */
         This->cached_frame = This->frame_count;
-        free(This->cached_tile);
+        RtlFreeHeap(GetProcessHeap(), 0, This->cached_tile);
         This->cached_tile = NULL;
     }
 
@@ -749,7 +750,7 @@ static HRESULT tiff_decoder_read_tile(struct tiff_decoder *This, UINT tile_x, UI
     /* 3bps RGB */
     if (info->source_bpp == 3 && info->samples == 3 && info->frame.bpp == 24)
     {
-        BYTE *srcdata, *src, *dst;
+        BYTE * HOSTPTR srcdata, * HOSTPTR src, * HOSTPTR dst;
         DWORD x, y, count, width_bytes = (info->tile_width * 3 + 7) / 8;
 
         count = width_bytes * info->tile_height;
@@ -820,7 +821,7 @@ static HRESULT tiff_decoder_read_tile(struct tiff_decoder *This, UINT tile_x, UI
     /* 12bps RGB */
     else if (info->source_bpp == 12 && info->samples == 3 && info->frame.bpp == 24)
     {
-        BYTE *srcdata, *src, *dst;
+        BYTE * HOSTPTR srcdata, * HOSTPTR src, * HOSTPTR dst;
         DWORD x, y, count, width_bytes = (info->tile_width * 12 + 7) / 8;
 
         count = width_bytes * info->tile_height;
@@ -855,7 +856,7 @@ static HRESULT tiff_decoder_read_tile(struct tiff_decoder *This, UINT tile_x, UI
     /* 4bps RGBA */
     else if (info->source_bpp == 4 && info->samples == 4 && info->frame.bpp == 32)
     {
-        BYTE *srcdata, *src, *dst;
+        BYTE * HOSTPTR srcdata, * HOSTPTR src, * HOSTPTR dst;
         DWORD x, y, count, width_bytes = (info->tile_width * 3 + 7) / 8;
 
         count = width_bytes * info->tile_height;
@@ -894,7 +895,7 @@ static HRESULT tiff_decoder_read_tile(struct tiff_decoder *This, UINT tile_x, UI
     /* 16bps RGBA */
     else if (info->source_bpp == 16 && info->samples == 4 && info->frame.bpp == 32)
     {
-        BYTE *srcdata, *src, *dst;
+        BYTE * HOSTPTR srcdata, * HOSTPTR src, * HOSTPTR dst;
         DWORD x, y, count, width_bytes = (info->tile_width * 12 + 7) / 8;
 
         count = width_bytes * info->tile_height;
@@ -924,11 +925,11 @@ static HRESULT tiff_decoder_read_tile(struct tiff_decoder *This, UINT tile_x, UI
     /* 8bpp grayscale with extra alpha */
     else if (info->source_bpp == 16 && info->samples == 2 && info->frame.bpp == 32)
     {
-        BYTE *src;
-        DWORD *dst, count = info->tile_width * info->tile_height;
+        BYTE * HOSTPTR src;
+        DWORD * HOSTPTR dst, count = info->tile_width * info->tile_height;
 
         src = This->cached_tile + info->tile_width * info->tile_height * 2 - 2;
-        dst = (DWORD *)(This->cached_tile + info->tile_size - 4);
+        dst = (DWORD * HOSTPTR)(This->cached_tile + info->tile_size - 4);
 
         while (count--)
         {
@@ -951,7 +952,7 @@ static HRESULT tiff_decoder_read_tile(struct tiff_decoder *This, UINT tile_x, UI
     if (swap_bytes && info->bps > 8)
     {
         UINT row, i, samples_per_row;
-        BYTE *sample, temp;
+        BYTE * HOSTPTR sample, temp;
 
         samples_per_row = info->tile_width * info->samples;
 
@@ -978,7 +979,7 @@ static HRESULT tiff_decoder_read_tile(struct tiff_decoder *This, UINT tile_x, UI
 
     if (info->invert_grayscale)
     {
-        BYTE *byte, *end;
+        BYTE * HOSTPTR byte, * HOSTPTR end;
 
         if (info->samples != 1)
         {
@@ -1015,7 +1016,7 @@ static HRESULT CDECL tiff_decoder_copy_pixels(struct decoder* iface, UINT frame,
 
     if (!This->cached_tile)
     {
-        This->cached_tile = malloc(info->tile_size);
+        This->cached_tile = RtlAllocateHeap(GetProcessHeap(), 0, info->tile_size);
         if (!This->cached_tile)
             return E_OUTOFMEMORY;
     }
@@ -1142,7 +1143,7 @@ static void CDECL tiff_decoder_destroy(struct decoder* iface)
 {
     struct tiff_decoder *This = impl_from_decoder(iface);
     if (This->tiff) pTIFFClose(This->tiff);
-    free(This->cached_tile);
+    RtlFreeHeap(GetProcessHeap(), 0, This->cached_tile);
     RtlFreeHeap(GetProcessHeap(), 0, This);
 }
 
@@ -1327,7 +1328,7 @@ static HRESULT CDECL tiff_encoder_write_lines(struct encoder* iface,
     BYTE *data, DWORD line_count, DWORD stride)
 {
     struct tiff_encoder* This = impl_from_encoder(iface);
-    BYTE *row_data, *swapped_data = NULL;
+    BYTE * HOSTPTR row_data, * HOSTPTR swapped_data = NULL;
     UINT i, j, line_size;
 
     line_size = ((This->encoder_frame.width * This->format->bpp)+7)/8;

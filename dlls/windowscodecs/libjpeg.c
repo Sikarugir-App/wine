@@ -72,9 +72,9 @@ static CRITICAL_SECTION_DEBUG init_jpeg_cs_debug =
 };
 static CRITICAL_SECTION init_jpeg_cs = { &init_jpeg_cs_debug, -1, 0, 0, 0, 0 };
 
-static void *libjpeg_handle;
+static void * HOSTPTR libjpeg_handle;
 
-#define MAKE_FUNCPTR(f) static typeof(f) * p##f
+#define MAKE_FUNCPTR(f) static typeof(f) * HOSTPTR p##f
 MAKE_FUNCPTR(jpeg_CreateCompress);
 MAKE_FUNCPTR(jpeg_CreateDecompress);
 MAKE_FUNCPTR(jpeg_destroy_compress);
@@ -90,9 +90,9 @@ MAKE_FUNCPTR(jpeg_std_error);
 MAKE_FUNCPTR(jpeg_write_scanlines);
 #undef MAKE_FUNCPTR
 
-static void *load_libjpeg(void)
+static void * HOSTPTR load_libjpeg(void)
 {
-    void *result;
+    void * HOSTPTR result;
 
     RtlEnterCriticalSection(&init_jpeg_cs);
 
@@ -180,7 +180,7 @@ static inline struct jpeg_decoder *impl_from_decoder(struct decoder* iface)
 
 static inline struct jpeg_decoder *decoder_from_decompress(j_decompress_ptr decompress)
 {
-    return CONTAINING_RECORD(decompress, struct jpeg_decoder, cinfo);
+    return CONTAINING_RECORD(ADDRSPACECAST(void *, decompress), struct jpeg_decoder, cinfo);
 }
 
 static void CDECL jpeg_decoder_destroy(struct decoder* iface)
@@ -188,7 +188,7 @@ static void CDECL jpeg_decoder_destroy(struct decoder* iface)
     struct jpeg_decoder *This = impl_from_decoder(iface);
 
     if (This->cinfo_initialized) pjpeg_destroy_decompress(&This->cinfo);
-    free(This->image_data);
+    RtlFreeHeap(GetProcessHeap(), 0, This->image_data);
     RtlFreeHeap(GetProcessHeap(), 0, This);
 }
 
@@ -339,7 +339,7 @@ static HRESULT CDECL jpeg_decoder_initialize(struct decoder* iface, IStream *str
     This->stride = (This->frame.bpp * This->cinfo.output_width + 7) / 8;
     data_size = This->stride * This->cinfo.output_height;
 
-    This->image_data = malloc(data_size);
+    This->image_data = RtlAllocateHeap( GetProcessHeap(), 0, data_size);
     if (!This->image_data)
         return E_OUTOFMEMORY;
 
@@ -488,7 +488,9 @@ static inline struct jpeg_encoder *impl_from_encoder(struct encoder* iface)
 
 static inline struct jpeg_encoder *encoder_from_compress(j_compress_ptr compress)
 {
-    return CONTAINING_RECORD(compress, struct jpeg_encoder, cinfo);
+    /* We set compress ourselves in the jpeg_start_compress call, it is pointing into a
+     * HeapAlloc'ed struct. */
+    return CONTAINING_RECORD(ADDRSPACECAST(void *, compress), struct jpeg_encoder, cinfo);
 }
 
 static void dest_mgr_init_destination(j_compress_ptr cinfo)
@@ -634,7 +636,7 @@ HRESULT CDECL jpeg_encoder_write_lines(struct encoder* iface, BYTE *data,
 {
     struct jpeg_encoder *This = impl_from_encoder(iface);
     jmp_buf jmpbuf;
-    BYTE *swapped_data = NULL, *current_row;
+    BYTE * HOSTPTR swapped_data = NULL, * HOSTPTR current_row;
     UINT line;
     int row_size;
 

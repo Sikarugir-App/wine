@@ -180,9 +180,16 @@ static BOOL wined3d_buffer_gl_create_buffer_object(struct wined3d_buffer_gl *buf
     binding = wined3d_buffer_gl_binding_from_bind_flags(gl_info, buffer_gl->b.resource.bind_flags);
     if (buffer_gl->b.resource.usage & WINED3DUSAGE_DYNAMIC)
     {
+        TRACE("Buffer has WINED3DUSAGE_DYNAMIC set.\n");
         usage = GL_STREAM_DRAW_ARB;
         coherent = false;
     }
+
+    if (cxgames_hacks.allow_glmapbuffer == WINED3D_MAPBUF_NEVER)
+    {
+        buffer_gl->b.flags |= WINED3D_BUFFER_PIN_SYSMEM;
+    }
+
     gl_storage_flags = wined3d_resource_gl_storage_flags(&buffer_gl->b.resource);
     bo = &buffer_gl->bo;
     if (!wined3d_context_gl_create_bo(context_gl, size, binding, usage, coherent, gl_storage_flags, bo))
@@ -669,6 +676,8 @@ static void wined3d_buffer_destroy_object(void *object)
     struct wined3d_buffer *buffer = object;
     struct wined3d_context *context;
 
+    TRACE("buffer %p.\n", buffer);
+
     if (buffer->buffer_object)
     {
         context = context_acquire(buffer->resource.device, NULL, 0);
@@ -832,7 +841,7 @@ static HRESULT buffer_resource_sub_resource_map(struct wined3d_resource *resourc
     struct wined3d_device *device = resource->device;
     struct wined3d_context *context;
     unsigned int offset, size;
-    uint8_t *base;
+    uint8_t * WIN32PTR base;
     LONG count;
 
     TRACE("resource %p, sub_resource_idx %u, map_desc %p, box %s, flags %#x.\n",
@@ -944,6 +953,24 @@ static HRESULT buffer_resource_sub_resource_map(struct wined3d_resource *resourc
     map_desc->data = base + offset;
 
     TRACE("Returning memory at %p (base %p, offset %u).\n", map_desc->data, base, offset);
+
+    return WINED3D_OK;
+}
+
+static HRESULT buffer_resource_sub_resource_map_info(struct wined3d_resource *resource, unsigned int sub_resource_idx,
+        struct wined3d_map_info *info, DWORD flags)
+{
+    struct wined3d_buffer *buffer = buffer_from_resource(resource);
+
+    if (sub_resource_idx)
+    {
+        WARN("Invalid sub_resource_idx %u.\n", sub_resource_idx);
+        return E_INVALIDARG;
+    }
+
+    info->row_pitch   = resource->size;
+    info->slice_pitch = resource->size;
+    info->size        = buffer->resource.size;
 
     return WINED3D_OK;
 }
@@ -1084,6 +1111,7 @@ static const struct wined3d_resource_ops buffer_resource_ops =
     buffer_resource_preload,
     buffer_resource_unload,
     buffer_resource_sub_resource_map,
+    buffer_resource_sub_resource_map_info,
     buffer_resource_sub_resource_unmap,
 };
 
@@ -1502,8 +1530,8 @@ static void wined3d_buffer_vk_upload_ranges(struct wined3d_buffer *buffer, struc
         {
             range = &ranges[range_count];
 
-            src.addr = (uint8_t *)data + range->offset - data_offset;
-            dst.addr = (void *)(uintptr_t)range->offset;
+            src.addr = (uint8_t * WIN32PTR)data + range->offset - data_offset;
+            dst.addr = (void * WIN32PTR)(SIZE_T)range->offset;
             wined3d_context_copy_bo_address(context, &dst, &src, range->size);
         }
 
@@ -1559,6 +1587,39 @@ HRESULT wined3d_buffer_vk_init(struct wined3d_buffer_vk *buffer_vk, struct wined
         buffer_vk->b.flags |= WINED3D_BUFFER_USE_BO;
 
     return wined3d_buffer_init(&buffer_vk->b, device, desc, data, parent, parent_ops, &wined3d_buffer_vk_ops);
+}
+
+void wined3d_buffer_vk_barrier(struct wined3d_buffer_vk *buffer_vk,
+        struct wined3d_context_vk *context_vk, uint32_t bind_mask)
+{
+    TRACE("buffer_vk %p, context_vk %p, bind_mask %s.\n",
+            buffer_vk, context_vk, wined3d_debug_bind_flags(bind_mask));
+
+    if (buffer_vk->bind_mask && buffer_vk->bind_mask != bind_mask)
+    {
+        const struct wined3d_vk_info *vk_info = context_vk->vk_info;
+        VkBufferMemoryBarrier vk_barrier;
+
+        TRACE("    %s -> %s.\n",
+                wined3d_debug_bind_flags(buffer_vk->bind_mask), wined3d_debug_bind_flags(bind_mask));
+
+        wined3d_context_vk_end_current_render_pass(context_vk);
+
+        vk_barrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+        vk_barrier.pNext = NULL;
+        vk_barrier.srcAccessMask = vk_access_mask_from_bind_flags(buffer_vk->bind_mask);
+        vk_barrier.dstAccessMask = vk_access_mask_from_bind_flags(bind_mask);
+        vk_barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        vk_barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        vk_barrier.buffer = buffer_vk->bo.vk_buffer;
+        vk_barrier.offset = buffer_vk->bo.buffer_offset;
+        vk_barrier.size = buffer_vk->b.resource.size;
+        VK_CALL(vkCmdPipelineBarrier(wined3d_context_vk_get_command_buffer(context_vk),
+                vk_pipeline_stage_mask_from_bind_flags(buffer_vk->bind_mask),
+                vk_pipeline_stage_mask_from_bind_flags(bind_mask),
+                0, 0, NULL, 1, &vk_barrier, 0, NULL));
+    }
+    buffer_vk->bind_mask = bind_mask;
 }
 
 HRESULT CDECL wined3d_buffer_create(struct wined3d_device *device, const struct wined3d_buffer_desc *desc,

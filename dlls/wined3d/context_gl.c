@@ -1186,6 +1186,7 @@ static BOOL wined3d_context_gl_set_pixel_format(struct wined3d_context_gl *conte
     int format = context_gl->pixel_format;
     HDC dc = context_gl->dc;
     int current;
+    HWND win;
 
     if (private && context_gl->dc_has_format)
         return TRUE;
@@ -1196,55 +1197,43 @@ static BOOL wined3d_context_gl_set_pixel_format(struct wined3d_context_gl *conte
     current = gl_info->gl_ops.wgl.p_wglGetPixelFormat(dc);
     if (current == format) goto success;
 
-    if (!current)
-    {
-        if (!SetPixelFormat(dc, format, NULL))
-        {
-            /* This may also happen if the dc belongs to a destroyed window. */
-            WARN("Failed to set pixel format %d on device context %p, last error %#x.\n",
-                    format, dc, GetLastError());
-            return FALSE;
-        }
-
-        context_gl->restore_pf = 0;
-        context_gl->restore_pf_win = private ? NULL : WindowFromDC(dc);
-        goto success;
-    }
-
     /* By default WGL doesn't allow pixel format adjustments but we need it
      * here. For this reason there's a Wine specific wglSetPixelFormat()
-     * which allows us to set the pixel format multiple times. Only use it
-     * when really needed. */
+     * which allows us to set the pixel format multiple times. Use it when we
+     * can, because even though no pixel format may currently be set, the
+     * application may try to set one later. */
     if (gl_info->supported[WGL_WINE_PIXEL_FORMAT_PASSTHROUGH])
     {
-        HWND win;
-
         if (!GL_EXTCALL(wglSetPixelFormatWINE(dc, format)))
         {
             ERR("wglSetPixelFormatWINE failed to set pixel format %d on device context %p.\n",
                     format, dc);
             return FALSE;
         }
-
-        win = private ? NULL : WindowFromDC(dc);
-        if (win != context_gl->restore_pf_win)
-        {
-            wined3d_context_gl_restore_pixel_format(context_gl);
-
-            context_gl->restore_pf = private ? 0 : current;
-            context_gl->restore_pf_win = win;
-        }
-
-        goto success;
+    }
+    else if (current)
+    {
+        /* OpenGL doesn't allow pixel format adjustments. Print an error and
+         * continue using the old format. There's a big chance that the old
+         * format works although with a performance hit and perhaps rendering
+         * errors. */
+        ERR("Unable to set pixel format %d on device context %p. Already using format %d.\n",
+                format, dc, current);
+        return TRUE;
+    }
+    else if (!SetPixelFormat(dc, format, NULL))
+    {
+        /* This may also happen if the dc belongs to a destroyed window. */
+        WARN("Failed to set pixel format %d on device context %p, last error %#x.\n",
+                format, dc, GetLastError());
+        return FALSE;
     }
 
-    /* OpenGL doesn't allow pixel format adjustments. Print an error and
-     * continue using the old format. There's a big chance that the old
-     * format works although with a performance hit and perhaps rendering
-     * errors. */
-    ERR("Unable to set pixel format %d on device context %p. Already using format %d.\n",
-            format, dc, current);
-    return TRUE;
+    win = private ? NULL : WindowFromDC(dc);
+    if (win != context_gl->restore_pf_win)
+        wined3d_context_gl_restore_pixel_format(context_gl);
+    context_gl->restore_pf = private ? 0 : current;
+    context_gl->restore_pf_win = win;
 
 success:
     if (private)
@@ -1374,9 +1363,20 @@ static void wined3d_context_gl_cleanup(struct wined3d_context_gl *context_gl)
 
     if (context_gl->valid)
     {
-        wined3d_context_gl_submit_command_fence(context_gl);
-        wined3d_context_gl_wait_command_fence(context_gl,
-                wined3d_device_gl(context_gl->c.device)->current_fence_id - 1);
+        /* If we're here because we're switching away from a previously
+         * destroyed context, acquiring a context in order to submit a fence
+         * is problematic. (In particular, we'd end up back here again in the
+         * process of switching to the newly acquired context.) */
+        if (context_gl->c.destroyed)
+        {
+            gl_info->gl_ops.gl.p_glFinish();
+        }
+        else
+        {
+            wined3d_context_gl_submit_command_fence(context_gl);
+            wined3d_context_gl_wait_command_fence(context_gl,
+                    wined3d_device_gl(context_gl->c.device)->current_fence_id - 1);
+        }
 
         if (context_gl->dummy_arbfp_prog)
             GL_EXTCALL(glDeleteProgramsARB(1, &context_gl->dummy_arbfp_prog));
@@ -1648,19 +1648,27 @@ static void wined3d_context_gl_enter(struct wined3d_context_gl *context_gl)
 }
 
 /* This function takes care of wined3d pixel format selection. */
-static int context_choose_pixel_format(const struct wined3d_device *device, HDC hdc,
-        const struct wined3d_format *color_format, const struct wined3d_format *ds_format,
+static int context_choose_pixel_format(const struct wined3d_device *device, const struct wined3d_swapchain_gl *swapchain,
+        HDC hdc, const struct wined3d_format *color_format, const struct wined3d_format *ds_format,
         BOOL auxBuffers)
 {
+    const struct wined3d_gl_info *gl_info = &device->adapter->gl_info;
     unsigned int cfg_count = wined3d_adapter_gl(device->adapter)->pixel_format_count;
     unsigned int current_value;
     PIXELFORMATDESCRIPTOR pfd;
+    BOOL double_buffer = TRUE;
     int iPixelFormat = 0;
     unsigned int i;
 
     TRACE("device %p, dc %p, color_format %s, ds_format %s, aux_buffers %#x.\n",
             device, hdc, debug_d3dformat(color_format->id), debug_d3dformat(ds_format->id),
             auxBuffers);
+
+    /* CrossOver hack for bug 9330. */
+    if ((gl_info->quirks & WINED3D_CX_QUIRK_APPLE_DOUBLE_BUFFER)
+            && wined3d_settings.offscreen_rendering_mode == ORM_FBO
+            && !swapchain->s.state.desc.backbuffer_count)
+        double_buffer = FALSE;
 
     current_value = 0;
     for (i = 0; i < cfg_count; ++i)
@@ -1673,7 +1681,7 @@ static int context_choose_pixel_format(const struct wined3d_device *device, HDC 
         if (cfg->iPixelType != WGL_TYPE_RGBA_ARB)
             continue;
         /* In window mode we need a window drawable format and double buffering. */
-        if (!(cfg->windowDrawable && cfg->doubleBuffer))
+        if (!cfg->windowDrawable || (double_buffer && !cfg->doubleBuffer))
             continue;
         if (cfg->redSize < color_format->red_size)
             continue;
@@ -1696,17 +1704,19 @@ static int context_choose_pixel_format(const struct wined3d_device *device, HDC 
          * depth it is no problem to emulate 16-bit using e.g. 24-bit, so accept that. */
         if (cfg->depthSize == ds_format->depth_size)
             value += 1;
-        if (cfg->stencilSize == ds_format->stencil_size)
+        if (!cfg->doubleBuffer == !double_buffer)
             value += 2;
-        if (cfg->alphaSize == color_format->alpha_size)
+        if (cfg->stencilSize == ds_format->stencil_size)
             value += 4;
+        if (cfg->alphaSize == color_format->alpha_size)
+            value += 8;
         /* We like to have aux buffers in backbuffer mode */
         if (auxBuffers && cfg->auxBuffers)
-            value += 8;
+            value += 16;
         if (cfg->redSize == color_format->red_size
                 && cfg->greenSize == color_format->green_size
                 && cfg->blueSize == color_format->blue_size)
-            value += 16;
+            value += 32;
 
         if (value > current_value)
         {
@@ -1722,7 +1732,9 @@ static int context_choose_pixel_format(const struct wined3d_device *device, HDC 
         memset(&pfd, 0, sizeof(pfd));
         pfd.nSize      = sizeof(pfd);
         pfd.nVersion   = 1;
-        pfd.dwFlags    = PFD_SUPPORT_OPENGL | PFD_DOUBLEBUFFER | PFD_DRAW_TO_WINDOW;/*PFD_GENERIC_ACCELERATED*/
+        pfd.dwFlags    = PFD_SUPPORT_OPENGL | PFD_DRAW_TO_WINDOW;/*PFD_GENERIC_ACCELERATED*/
+        if (double_buffer)
+            pfd.dwFlags |= PFD_DOUBLEBUFFER;
         pfd.iPixelType = PFD_TYPE_RGBA;
         pfd.cAlphaBits = color_format->alpha_size;
         pfd.cColorBits = color_format->red_size + color_format->green_size
@@ -1938,7 +1950,7 @@ static BOOL wined3d_context_gl_create_wgl_ctx(struct wined3d_context_gl *context
             {
                 ds_format = wined3d_get_format(adapter, ds_formats[i], WINED3D_BIND_DEPTH_STENCIL);
                 if ((context_gl->pixel_format = context_choose_pixel_format(device,
-                        context_gl->dc, colour_format, ds_format, TRUE)))
+                        swapchain_gl, context_gl->dc, colour_format, ds_format, TRUE)))
                 {
                     swapchain_gl->s.ds_format = ds_format;
                     break;
@@ -1950,7 +1962,7 @@ static BOOL wined3d_context_gl_create_wgl_ctx(struct wined3d_context_gl *context
         }
         else
         {
-            context_gl->pixel_format = context_choose_pixel_format(device,
+            context_gl->pixel_format = context_choose_pixel_format(device, swapchain_gl,
                     context_gl->dc, colour_format, swapchain_gl->s.ds_format, TRUE);
         }
     }
@@ -1966,7 +1978,7 @@ static BOOL wined3d_context_gl_create_wgl_ctx(struct wined3d_context_gl *context
          * conflicting pixel formats. */
         colour_format = wined3d_get_format(adapter, WINED3DFMT_B8G8R8A8_UNORM, target_bind_flags);
         ds_format = wined3d_get_format(adapter, WINED3DFMT_UNKNOWN, WINED3D_BIND_DEPTH_STENCIL);
-        context_gl->pixel_format = context_choose_pixel_format(device,
+        context_gl->pixel_format = context_choose_pixel_format(device, swapchain_gl,
                 context_gl->dc, colour_format, ds_format, FALSE);
     }
 
@@ -2394,6 +2406,9 @@ void wined3d_context_gl_enable_clip_distances(struct wined3d_context_gl *context
     unsigned int clip_distance_count, i;
     uint32_t disable_mask, current_mask;
 
+    if (gl_info->quirks & WINED3D_CX_QUIRK_GLSL_CLIP_BROKEN)
+        return;
+
     clip_distance_count = gl_info->limits.user_clip_distances;
     disable_mask = ~enable_mask;
     enable_mask &= (1u << clip_distance_count) - 1;
@@ -2657,7 +2672,7 @@ static void *wined3d_bo_gl_map(struct wined3d_bo_gl *bo,
     const struct wined3d_gl_info *gl_info;
     struct wined3d_bo_user *bo_user;
     struct wined3d_bo_gl tmp;
-    uint8_t *map_ptr;
+    uint8_t * WIN32PTR map_ptr;
 
     if (flags & WINED3D_MAP_NOOVERWRITE)
         goto map;
@@ -2693,11 +2708,11 @@ map:
 
     if (gl_info->supported[ARB_MAP_BUFFER_RANGE])
     {
-        map_ptr = GL_EXTCALL(glMapBufferRange(bo->binding, offset, size, wined3d_resource_gl_map_flags(flags)));
+        map_ptr = ADDRSPACECAST(void*, GL_EXTCALL(glMapBufferRange(bo->binding, offset, size, wined3d_resource_gl_map_flags(flags))));
     }
     else
     {
-        map_ptr = GL_EXTCALL(glMapBuffer(bo->binding, wined3d_resource_gl_legacy_map_flags(flags)));
+        map_ptr = ADDRSPACECAST(void*, GL_EXTCALL(glMapBuffer(bo->binding, wined3d_resource_gl_legacy_map_flags(flags))));
         map_ptr += offset;
     }
 
@@ -2777,7 +2792,7 @@ void wined3d_context_gl_copy_bo_address(struct wined3d_context_gl *context_gl,
             GL_EXTCALL(glBindBuffer(GL_COPY_READ_BUFFER, src_bo->id));
             GL_EXTCALL(glBindBuffer(GL_COPY_WRITE_BUFFER, dst_bo->id));
             GL_EXTCALL(glCopyBufferSubData(GL_COPY_READ_BUFFER, GL_COPY_WRITE_BUFFER,
-                    (GLintptr)src->addr, (GLintptr)dst->addr, size));
+                    (WINEGLDEF(GLintptr))src->addr, (WINEGLDEF(GLintptr))dst->addr, size));
             checkGLcall("direct buffer copy");
 
             wined3d_context_gl_reference_bo(context_gl, src_bo);
@@ -2799,7 +2814,7 @@ void wined3d_context_gl_copy_bo_address(struct wined3d_context_gl *context_gl,
     else if (!dst_bo && src_bo)
     {
         wined3d_context_gl_bind_bo(context_gl, src_bo->binding, src_bo->id);
-        GL_EXTCALL(glGetBufferSubData(src_bo->binding, (GLintptr)src->addr, size, dst->addr));
+        GL_EXTCALL(glGetBufferSubData(src_bo->binding, (WINEGLDEF(GLintptr))src->addr, size, dst->addr));
         checkGLcall("buffer download");
 
         wined3d_context_gl_reference_bo(context_gl, src_bo);
@@ -2807,7 +2822,7 @@ void wined3d_context_gl_copy_bo_address(struct wined3d_context_gl *context_gl,
     else if (dst_bo && !src_bo)
     {
         wined3d_context_gl_bind_bo(context_gl, dst_bo->binding, dst_bo->id);
-        GL_EXTCALL(glBufferSubData(dst_bo->binding, (GLintptr)dst->addr, size, src->addr));
+        GL_EXTCALL(glBufferSubData(dst_bo->binding, (WINEGLDEF(GLintptr))dst->addr, size, src->addr));
         checkGLcall("buffer upload");
 
         wined3d_context_gl_reference_bo(context_gl, dst_bo);
@@ -4111,11 +4126,6 @@ static void wined3d_context_gl_setup_target(struct wined3d_context_gl *context_g
             if ((old->alpha_size && !new->alpha_size) || (!old->alpha_size && new->alpha_size)
                     || !(texture->resource.format_flags & WINED3DFMT_FLAG_POSTPIXELSHADER_BLENDING))
                 context_invalidate_state(&context_gl->c, STATE_BLEND);
-
-            /* Update sRGB writing when switching between formats that do/do not support sRGB writing */
-            if ((context_gl->c.current_rt.texture->resource.format_flags & WINED3DFMT_FLAG_SRGB_WRITE)
-                    != (texture->resource.format_flags & WINED3DFMT_FLAG_SRGB_WRITE))
-                context_invalidate_state(&context_gl->c, STATE_RENDER(WINED3D_RS_SRGBWRITEENABLE));
         }
 
         /* When switching away from an offscreen render target, and we're not
@@ -4282,7 +4292,7 @@ void dispatch_compute(struct wined3d_device *device, const struct wined3d_state 
         struct wined3d_buffer_gl *buffer_gl = wined3d_buffer_gl(indirect->buffer);
 
         GL_EXTCALL(glBindBuffer(GL_DISPATCH_INDIRECT_BUFFER, buffer_gl->bo.id));
-        GL_EXTCALL(glDispatchComputeIndirect((GLintptr)indirect->offset));
+        GL_EXTCALL(glDispatchComputeIndirect((WINEGLDEF(GLintptr))indirect->offset));
         GL_EXTCALL(glBindBuffer(GL_DISPATCH_INDIRECT_BUFFER, 0));
         wined3d_context_gl_reference_bo(context_gl, &buffer_gl->bo);
     }
@@ -5367,7 +5377,11 @@ static void wined3d_context_gl_load_numbered_arrays(struct wined3d_context_gl *c
 
         if (gl_info->supported[ARB_INSTANCED_ARRAYS])
         {
-            GL_EXTCALL(glVertexAttribDivisor(i, element->divisor));
+            unsigned int divisor = 0;
+
+            if (element->instanced)
+                divisor = element->divisor ? element->divisor : UINT_MAX;
+            GL_EXTCALL(glVertexAttribDivisor(i, divisor));
         }
         else if (element->divisor)
         {

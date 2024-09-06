@@ -3042,6 +3042,30 @@ static void dump_get_surface_region_reply( const struct get_surface_region_reply
     dump_varargs_rectangles( ", region=", cur_size );
 }
 
+static void dump_create_shm_surface_request( const struct create_shm_surface_request *req )
+{
+    fprintf( stderr, " window=%08x", req->window );
+    fprintf( stderr, ", mapping_size=%u", req->mapping_size );
+}
+
+static void dump_create_shm_surface_reply( const struct create_shm_surface_reply *req )
+{
+    fprintf( stderr, " handle=%04x", req->handle );
+    fprintf( stderr, ", mapping=%04x", req->mapping );
+}
+
+static void dump_lock_shm_surface_request( const struct lock_shm_surface_request *req )
+{
+    fprintf( stderr, " surface=%04x", req->surface );
+    fprintf( stderr, ", lock=%d", req->lock );
+}
+
+static void dump_flush_shm_surface_request( const struct flush_shm_surface_request *req )
+{
+    fprintf( stderr, " surface=%04x", req->surface );
+    dump_rectangle( ", bounds=", &req->bounds );
+}
+
 static void dump_get_window_region_request( const struct get_window_region_request *req )
 {
     fprintf( stderr, " window=%08x", req->window );
@@ -3271,6 +3295,46 @@ static void dump_set_user_object_info_reply( const struct set_user_object_info_r
     fprintf( stderr, " is_desktop=%d", req->is_desktop );
     fprintf( stderr, ", old_obj_flags=%08x", req->old_obj_flags );
     dump_varargs_unicode_str( ", name=", cur_size );
+}
+
+static void dump_create_monitor_request( const struct create_monitor_request *req )
+{
+    dump_rectangle( " monitor_rect=", &req->monitor_rect );
+    dump_rectangle( ", work_rect=", &req->work_rect );
+    dump_varargs_unicode_str( ", adapter=", cur_size );
+}
+
+static void dump_create_monitor_reply( const struct create_monitor_reply *req )
+{
+    fprintf( stderr, " handle=%08x", req->handle );
+}
+
+static void dump_get_monitor_info_request( const struct get_monitor_info_request *req )
+{
+    fprintf( stderr, " handle=%08x", req->handle );
+}
+
+static void dump_get_monitor_info_reply( const struct get_monitor_info_reply *req )
+{
+    dump_rectangle( " monitor_rect=", &req->monitor_rect );
+    dump_rectangle( ", work_rect=", &req->work_rect );
+    dump_varargs_unicode_str( ", adapter=", cur_size );
+}
+
+static void dump_enum_monitor_request( const struct enum_monitor_request *req )
+{
+    fprintf( stderr, " index=%08x", req->index );
+}
+
+static void dump_enum_monitor_reply( const struct enum_monitor_reply *req )
+{
+    fprintf( stderr, " handle=%08x", req->handle );
+    dump_rectangle( ", monitor_rect=", &req->monitor_rect );
+}
+
+static void dump_destroy_monitor_request( const struct destroy_monitor_request *req )
+{
+    fprintf( stderr, " handle=%08x", req->handle );
 }
 
 static void dump_register_hotkey_request( const struct register_hotkey_request *req )
@@ -4381,6 +4445,63 @@ static void dump_resume_process_request( const struct resume_process_request *re
     fprintf( stderr, " handle=%04x", req->handle );
 }
 
+static void dump_create_esync_request( const struct create_esync_request *req )
+{
+    fprintf( stderr, " access=%08x", req->access );
+    fprintf( stderr, ", initval=%d", req->initval );
+    fprintf( stderr, ", type=%d", req->type );
+    fprintf( stderr, ", max=%d", req->max );
+    dump_varargs_object_attributes( ", objattr=", cur_size );
+}
+
+static void dump_create_esync_reply( const struct create_esync_reply *req )
+{
+    fprintf( stderr, " handle=%04x", req->handle );
+    fprintf( stderr, ", type=%d", req->type );
+    fprintf( stderr, ", shm_idx=%08x", req->shm_idx );
+}
+
+static void dump_open_esync_request( const struct open_esync_request *req )
+{
+    fprintf( stderr, " access=%08x", req->access );
+    fprintf( stderr, ", attributes=%08x", req->attributes );
+    fprintf( stderr, ", rootdir=%04x", req->rootdir );
+    fprintf( stderr, ", type=%d", req->type );
+    dump_varargs_unicode_str( ", name=", cur_size );
+}
+
+static void dump_open_esync_reply( const struct open_esync_reply *req )
+{
+    fprintf( stderr, " handle=%04x", req->handle );
+    fprintf( stderr, ", type=%d", req->type );
+    fprintf( stderr, ", shm_idx=%08x", req->shm_idx );
+}
+
+static void dump_get_esync_read_fd_request( const struct get_esync_read_fd_request *req )
+{
+    fprintf( stderr, " handle=%04x", req->handle );
+}
+
+static void dump_get_esync_read_fd_reply( const struct get_esync_read_fd_reply *req )
+{
+    fprintf( stderr, " type=%d", req->type );
+    fprintf( stderr, ", shm_idx=%08x", req->shm_idx );
+}
+
+static void dump_get_esync_write_fd_request( const struct get_esync_write_fd_request *req )
+{
+    fprintf( stderr, " handle=%04x", req->handle );
+}
+
+static void dump_esync_msgwait_request( const struct esync_msgwait_request *req )
+{
+    fprintf( stderr, " in_msgwait=%d", req->in_msgwait );
+}
+
+static void dump_get_esync_apc_fd_request( const struct get_esync_apc_fd_request *req )
+{
+}
+
 static const dump_func req_dumpers[REQ_NB_REQUESTS] = {
     (dump_func)dump_new_process_request,
     (dump_func)dump_exec_process_request,
@@ -4533,6 +4654,9 @@ static const dump_func req_dumpers[REQ_NB_REQUESTS] = {
     (dump_func)dump_get_windows_offset_request,
     (dump_func)dump_get_visible_region_request,
     (dump_func)dump_get_surface_region_request,
+    (dump_func)dump_create_shm_surface_request,
+    (dump_func)dump_lock_shm_surface_request,
+    (dump_func)dump_flush_shm_surface_request,
     (dump_func)dump_get_window_region_request,
     (dump_func)dump_set_window_region_request,
     (dump_func)dump_get_update_region_request,
@@ -4556,6 +4680,10 @@ static const dump_func req_dumpers[REQ_NB_REQUESTS] = {
     (dump_func)dump_set_thread_desktop_request,
     (dump_func)dump_enum_desktop_request,
     (dump_func)dump_set_user_object_info_request,
+    (dump_func)dump_create_monitor_request,
+    (dump_func)dump_get_monitor_info_request,
+    (dump_func)dump_enum_monitor_request,
+    (dump_func)dump_destroy_monitor_request,
     (dump_func)dump_register_hotkey_request,
     (dump_func)dump_unregister_hotkey_request,
     (dump_func)dump_attach_thread_input_request,
@@ -4656,6 +4784,12 @@ static const dump_func req_dumpers[REQ_NB_REQUESTS] = {
     (dump_func)dump_terminate_job_request,
     (dump_func)dump_suspend_process_request,
     (dump_func)dump_resume_process_request,
+    (dump_func)dump_create_esync_request,
+    (dump_func)dump_open_esync_request,
+    (dump_func)dump_get_esync_read_fd_request,
+    (dump_func)dump_get_esync_write_fd_request,
+    (dump_func)dump_esync_msgwait_request,
+    (dump_func)dump_get_esync_apc_fd_request,
 };
 
 static const dump_func reply_dumpers[REQ_NB_REQUESTS] = {
@@ -4810,6 +4944,9 @@ static const dump_func reply_dumpers[REQ_NB_REQUESTS] = {
     (dump_func)dump_get_windows_offset_reply,
     (dump_func)dump_get_visible_region_reply,
     (dump_func)dump_get_surface_region_reply,
+    (dump_func)dump_create_shm_surface_reply,
+    NULL,
+    NULL,
     (dump_func)dump_get_window_region_reply,
     NULL,
     (dump_func)dump_get_update_region_reply,
@@ -4833,6 +4970,10 @@ static const dump_func reply_dumpers[REQ_NB_REQUESTS] = {
     NULL,
     (dump_func)dump_enum_desktop_reply,
     (dump_func)dump_set_user_object_info_reply,
+    (dump_func)dump_create_monitor_reply,
+    (dump_func)dump_get_monitor_info_reply,
+    (dump_func)dump_enum_monitor_reply,
+    NULL,
     (dump_func)dump_register_hotkey_reply,
     (dump_func)dump_unregister_hotkey_reply,
     NULL,
@@ -4930,6 +5071,12 @@ static const dump_func reply_dumpers[REQ_NB_REQUESTS] = {
     NULL,
     NULL,
     (dump_func)dump_get_job_info_reply,
+    NULL,
+    NULL,
+    NULL,
+    (dump_func)dump_create_esync_reply,
+    (dump_func)dump_open_esync_reply,
+    (dump_func)dump_get_esync_read_fd_reply,
     NULL,
     NULL,
     NULL,
@@ -5087,6 +5234,9 @@ static const char * const req_names[REQ_NB_REQUESTS] = {
     "get_windows_offset",
     "get_visible_region",
     "get_surface_region",
+    "create_shm_surface",
+    "lock_shm_surface",
+    "flush_shm_surface",
     "get_window_region",
     "set_window_region",
     "get_update_region",
@@ -5110,6 +5260,10 @@ static const char * const req_names[REQ_NB_REQUESTS] = {
     "set_thread_desktop",
     "enum_desktop",
     "set_user_object_info",
+    "create_monitor",
+    "get_monitor_info",
+    "enum_monitor",
+    "destroy_monitor",
     "register_hotkey",
     "unregister_hotkey",
     "attach_thread_input",
@@ -5210,6 +5364,12 @@ static const char * const req_names[REQ_NB_REQUESTS] = {
     "terminate_job",
     "suspend_process",
     "resume_process",
+    "create_esync",
+    "open_esync",
+    "get_esync_read_fd",
+    "get_esync_write_fd",
+    "esync_msgwait",
+    "get_esync_apc_fd",
 };
 
 static const struct
@@ -5249,6 +5409,7 @@ static const struct
     { "ERROR_HOTKEY_NOT_REGISTERED", 0xc0010000 | ERROR_HOTKEY_NOT_REGISTERED },
     { "ERROR_INVALID_CURSOR_HANDLE", 0xc0010000 | ERROR_INVALID_CURSOR_HANDLE },
     { "ERROR_INVALID_INDEX",         0xc0010000 | ERROR_INVALID_INDEX },
+    { "ERROR_INVALID_MONITOR_HANDLE", 0xc0010000 | ERROR_INVALID_MONITOR_HANDLE },
     { "ERROR_INVALID_WINDOW_HANDLE", 0xc0010000 | ERROR_INVALID_WINDOW_HANDLE },
     { "ERROR_NO_MORE_USER_HANDLES",  0xc0010000 | ERROR_NO_MORE_USER_HANDLES },
     { "ERROR_WINDOW_OF_OTHER_THREAD", 0xc0010000 | ERROR_WINDOW_OF_OTHER_THREAD },
@@ -5266,6 +5427,7 @@ static const struct
     { "INSUFFICIENT_RESOURCES",      STATUS_INSUFFICIENT_RESOURCES },
     { "INVALID_CID",                 STATUS_INVALID_CID },
     { "INVALID_DEVICE_REQUEST",      STATUS_INVALID_DEVICE_REQUEST },
+    { "INVALID_DEVICE_STATE",        STATUS_INVALID_DEVICE_STATE },
     { "INVALID_FILE_FOR_SECTION",    STATUS_INVALID_FILE_FOR_SECTION },
     { "INVALID_HANDLE",              STATUS_INVALID_HANDLE },
     { "INVALID_IMAGE_FORMAT",        STATUS_INVALID_IMAGE_FORMAT },

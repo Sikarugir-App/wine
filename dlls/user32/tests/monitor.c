@@ -1964,7 +1964,6 @@ static BOOL CALLBACK test_handle_proc(HMONITOR full_monitor, HDC hdc, LPRECT rec
         monitor = (HMONITOR)((ULONG_PTR)full_monitor | ((ULONG_PTR)~0u << 16));
     SetLastError(0xdeadbeef);
     ret = GetMonitorInfoW(monitor, &monitor_info);
-    todo_wine_if(((ULONG_PTR)full_monitor >> 16) == 0)
     ok(ret, "GetMonitorInfoW failed, error %#x.\n", GetLastError());
 
     monitor = (HMONITOR)((ULONG_PTR)full_monitor & 0xffff);

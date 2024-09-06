@@ -20,6 +20,9 @@
  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
  */
 
+#include <stdio.h>
+#include <unistd.h>
+
 #define COBJMACROS
 
 #include "wine/debug.h"
@@ -349,6 +352,15 @@ static IShellFolder *get_starting_shell_folder(WCHAR *path)
     IShellFolder* desktop,*folder;
     LPITEMIDLIST root_pidl;
     HRESULT hres;
+
+#ifdef __ANDROID__
+    static WCHAR y_drive[] = {'Y',':',0};
+
+    if (!path)
+    {
+        path = y_drive;
+    }
+#endif
 
     SHGetDesktopFolder(&desktop);
 

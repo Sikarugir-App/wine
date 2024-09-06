@@ -1152,6 +1152,13 @@ static HRESULT d3d_rasterizer_state_init(struct d3d_rasterizer_state *state, str
     wined3d_desc.scissor = desc->ScissorEnable;
     wined3d_desc.line_antialias = desc->AntialiasedLineEnable;
 
+    if (desc->MultisampleEnable)
+    {
+        static unsigned int once;
+        if (!once++)
+            FIXME("Ignoring MultisampleEnable %#x.\n", desc->MultisampleEnable);
+    }
+
     /* We cannot fail after creating a wined3d_rasterizer_state object. It
      * would lead to double free. */
     if (FAILED(hr = wined3d_rasterizer_state_create(device->wined3d_device, &wined3d_desc,
@@ -1551,7 +1558,7 @@ static HRESULT d3d_sampler_state_init(struct d3d_sampler_state *state, struct d3
     wined3d_desc.mip_filter = wined3d_texture_filter_mip_from_d3d11(desc->Filter);
     wined3d_desc.lod_bias = desc->MipLODBias;
     wined3d_desc.min_lod = desc->MinLOD;
-    wined3d_desc.max_lod = desc->MaxLOD;
+    wined3d_desc.max_lod = max(desc->MinLOD, desc->MaxLOD);
     wined3d_desc.mip_base_level = 0;
     wined3d_desc.max_anisotropy = D3D11_DECODE_IS_ANISOTROPIC_FILTER(desc->Filter) ? desc->MaxAnisotropy : 1;
     wined3d_desc.compare = wined3d_texture_compare_from_d3d11(desc->Filter);

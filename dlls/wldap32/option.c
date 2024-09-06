@@ -185,7 +185,7 @@ ULONG CDECL ldap_get_optionA( WLDAP32_LDAP *ld, int option, void *value )
 ULONG CDECL ldap_get_optionW( WLDAP32_LDAP *ld, int option, void *value )
 {
     ULONG ret = WLDAP32_LDAP_NOT_SUPPORTED;
-#ifdef HAVE_LDAP
+#if defined(HAVE_LDAP) && !defined(__i386_on_x86_64__)
 
     TRACE( "(%p, 0x%08x, %p)\n", ld, option, value );
 
@@ -402,6 +402,10 @@ ULONG CDECL ldap_set_optionA( WLDAP32_LDAP *ld, int option, void *value )
 
 static BOOL query_supported_server_ctrls( WLDAP32_LDAP *ld )
 {
+#ifdef __i386_on_x86_64__
+    WINE_FIXME("Implement this for 32on64\n");
+    return FALSE;
+#else
     char *attrs[] = { (char *)"supportedControl", NULL };
     LDAPMessage *res, *entry;
 
@@ -425,6 +429,7 @@ static BOOL query_supported_server_ctrls( WLDAP32_LDAP *ld )
     ldap_msgfree( res );
 
     return ld->ld_server_ctrls != NULL;
+#endif
 }
 
 static BOOL is_supported_server_ctrls( WLDAP32_LDAP *ld, LDAPControl **ctrls )

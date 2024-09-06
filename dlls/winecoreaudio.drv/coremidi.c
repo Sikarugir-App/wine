@@ -20,6 +20,7 @@
 
 
 #include "config.h"
+#include "wine/32on64utils.h"
 
 #include <CoreMIDI/CoreMIDI.h>
 #include <mach/mach_time.h>

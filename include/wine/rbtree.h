@@ -20,11 +20,32 @@
  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
  */
 
+#ifdef __i386_on_x86_64__
+#if defined(__WINE_WINE_RBTREE_H) && defined(WINE_RBTREE_HOSTADDRSPACE) && defined(WINE_RBTREE_HOSTADDRSPACE_DISABLED)
+#error "rbtree.h was previously included without WINE_RBTREE_HOSTADDRSPACE but it's now defined"
+#endif
+
+#if defined(__WINE_WINE_RBTREE_H) && !defined(WINE_RBTREE_HOSTADDRSPACE) && defined(WINE_RBTREE_HOSTADDRSPACE_ENABLED)
+#error "rbtree.h was previously included with WINE_RBTREE_HOSTADDRSPACE but it's now not defined"
+#endif
+#endif
+
 #ifndef __WINE_WINE_RBTREE_H
 #define __WINE_WINE_RBTREE_H
 
+#include <stdint.h>
+#include <wine/32on64utils.h>
+
+#ifdef WINE_RBTREE_HOSTADDRSPACE
+#include <wine/hostaddrspace_enter.h>
+#define WINE_RBTREE_HOSTADDRSPACE_ENABLED
+#else
+#include <wine/winheader_enter.h>
+#define WINE_RBTREE_HOSTADDRSPACE_DISABLED
+#endif
+
 #define WINE_RB_ENTRY_VALUE(element, type, field) \
-    ((type *)((char *)(element) - offsetof(type, field)))
+    TRUNCCAST(type *, (uintptr_t)(element) - offsetof(type, field))
 
 struct wine_rb_entry
 {
@@ -404,5 +425,14 @@ static inline void wine_rb_replace(struct wine_rb_tree *tree, struct wine_rb_ent
         src->right->parent = src;
     src->flags = dst->flags;
 }
+
+#ifdef WINE_RBTREE_HOSTADDRSPACE
+#include <wine/hostaddrspace_exit.h>
+#else
+#include <wine/winheader_exit.h>
+#endif
+
+/* Undef WINE_RBTREE_HOSTADDRSPACE so we can detect if rbtree.h is included later without it re-defined */
+#undef WINE_RBTREE_HOSTADDRSPACE
 
 #endif  /* __WINE_WINE_RBTREE_H */

@@ -121,6 +121,12 @@ typedef struct {
 
 static const style_tbl_entry_t style_tbl[] = {
     {
+        L"animation",
+        DISPID_IHTMLCSSSTYLEDECLARATION2_ANIMATION,
+        DISPID_UNKNOWN,
+        ATTR_COMPAT_IE10
+    },
+    {
         L"animation-name",
         DISPID_IHTMLCSSSTYLEDECLARATION2_ANIMATIONNAME,
         DISPID_UNKNOWN,
@@ -9689,15 +9695,15 @@ static HRESULT WINAPI HTMLCSSStyleDeclaration2_get_animationIterationCount(IHTML
 static HRESULT WINAPI HTMLCSSStyleDeclaration2_put_animation(IHTMLCSSStyleDeclaration2 *iface, BSTR v)
 {
     CSSStyle *This = impl_from_IHTMLCSSStyleDeclaration2(iface);
-    FIXME("(%p)->(%s)\n", This, debugstr_w(v));
-    return E_NOTIMPL;
+    TRACE("(%p)->(%s)\n", This, debugstr_w(v));
+    return set_style_property(This, STYLEID_ANIMATION, v);
 }
 
 static HRESULT WINAPI HTMLCSSStyleDeclaration2_get_animation(IHTMLCSSStyleDeclaration2 *iface, BSTR *p)
 {
     CSSStyle *This = impl_from_IHTMLCSSStyleDeclaration2(iface);
-    FIXME("(%p)->(%p)\n", This, p);
-    return E_NOTIMPL;
+    TRACE("(%p)->(%p)\n", This, p);
+    return get_style_property(This, STYLEID_ANIMATION, p);
 }
 
 static HRESULT WINAPI HTMLCSSStyleDeclaration2_put_animationFillMode(IHTMLCSSStyleDeclaration2 *iface, BSTR v)
@@ -10055,8 +10061,8 @@ void init_css_style(CSSStyle *style, nsIDOMCSSStyleDeclaration *nsstyle, style_q
     style->nsstyle = nsstyle;
     nsIDOMCSSStyleDeclaration_AddRef(nsstyle);
 
-    init_dispex_with_compat_mode(&style->dispex, (IUnknown*)&style->IHTMLCSSStyleDeclaration_iface,
-                                 dispex_info, compat_mode);
+    init_dispatch(&style->dispex, (IUnknown*)&style->IHTMLCSSStyleDeclaration_iface,
+                  dispex_info, compat_mode);
 }
 
 HRESULT HTMLStyle_Create(HTMLElement *elem, HTMLStyle **ret)

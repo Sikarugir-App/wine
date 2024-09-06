@@ -930,6 +930,9 @@ static void SCROLL_HandleScrollEvent( HWND hwnd, INT nBar, UINT msg, POINT pt)
     case SCROLL_TOP_ARROW:
         SCROLL_DrawArrows( hdc, infoPtr, &rect, arrowSize, vertical,
                            (hittest == SCROLL_trackHitTest), FALSE );
+        SCROLL_DrawInterior( hwnd, hdc, nBar, &rect, arrowSize, thumbSize,
+                             thumbPos, infoPtr->flags, vertical,
+                             (hittest == SCROLL_trackHitTest), FALSE );
         if (hittest == SCROLL_trackHitTest)
         {
             if ((msg == WM_LBUTTONDOWN) || (msg == WM_SYSTIMER))
@@ -1032,6 +1035,9 @@ static void SCROLL_HandleScrollEvent( HWND hwnd, INT nBar, UINT msg, POINT pt)
     case SCROLL_BOTTOM_ARROW:
         SCROLL_DrawArrows( hdc, infoPtr, &rect, arrowSize, vertical,
                            FALSE, (hittest == SCROLL_trackHitTest) );
+        SCROLL_DrawInterior( hwnd, hdc, nBar, &rect, arrowSize, thumbSize,
+                             thumbPos, infoPtr->flags, vertical,
+                             FALSE, (hittest == SCROLL_trackHitTest) );
         if (hittest == SCROLL_trackHitTest)
         {
             if ((msg == WM_LBUTTONDOWN) || (msg == WM_SYSTIMER))

@@ -90,8 +90,10 @@
     X(typeofident,1, 0,0)                  \
     X(refval,     1, 0,0)                  \
     X(ret,        0, ARG_UINT,   0)        \
+    X(set_member, 1, 0,0)                  \
     X(setret,     1, 0,0)                  \
     X(sub,        1, 0,0)                  \
+    X(to_string,  1, 0,0)                  \
     X(undefined,  1, 0,0)                  \
     X(void,       1, 0,0)                  \
     X(xor,        1, 0,0)
@@ -142,6 +144,8 @@ typedef struct {
     BSTR name;
     int ref;
 } local_ref_t;
+
+#define INVALID_LOCAL_REF 0x7fffffff
 
 typedef struct _function_code_t {
     BSTR name;
@@ -200,6 +204,8 @@ struct _bytecode_t {
 
 HRESULT compile_script(script_ctx_t*,const WCHAR*,UINT64,unsigned,const WCHAR*,const WCHAR*,BOOL,BOOL,named_item_t*,bytecode_t**) DECLSPEC_HIDDEN;
 void release_bytecode(bytecode_t*) DECLSPEC_HIDDEN;
+
+unsigned get_location_line(bytecode_t *code, unsigned loc, unsigned *char_pos) DECLSPEC_HIDDEN;
 
 static inline bytecode_t *bytecode_addref(bytecode_t *code)
 {

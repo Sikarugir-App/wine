@@ -1562,10 +1562,10 @@ struct cmap_format4_compare_context
     unsigned int ch;
 };
 
-static int cmap_format4_compare_range(const void *a, const void *b)
+static int cmap_format4_compare_range(const void * HOSTPTR a, const void * HOSTPTR b)
 {
-    const struct cmap_format4_compare_context *key = a;
-    const UINT16 *end = b;
+    const struct cmap_format4_compare_context * HOSTPTR key = a;
+    const UINT16 * HOSTPTR end = b;
     unsigned int idx;
 
     if (key->ch > GET_BE_WORD(*end))
@@ -1582,7 +1582,7 @@ static UINT16 opentype_cmap_format4_get_glyph(const struct dwrite_cmap *cmap, un
 {
     struct cmap_format4_compare_context key = { .cmap = cmap, .ch = ch };
     unsigned int glyph, idx, range_offset;
-    const UINT16 *end_found;
+    const UINT16 * HOSTPTR end_found;
 
     /* Look up range. */
     end_found = bsearch(&key, cmap->u.format4.ends, cmap->u.format4.seg_count, sizeof(*cmap->u.format4.ends),
@@ -1647,10 +1647,10 @@ static unsigned int opentype_cmap_format6_10_get_ranges(const struct dwrite_cmap
     return 1;
 }
 
-static int cmap_format12_13_compare_group(const void *a, const void *b)
+static int cmap_format12_13_compare_group(const void * HOSTPTR a, const void * HOSTPTR b)
 {
-    const unsigned int *ch = a;
-    const UINT32 *group = b;
+    const unsigned int * HOSTPTR ch = a;
+    const UINT32 * HOSTPTR group = b;
 
     if (*ch > GET_BE_DWORD(group[1]))
         return 1;
@@ -1664,7 +1664,7 @@ static int cmap_format12_13_compare_group(const void *a, const void *b)
 static UINT16 opentype_cmap_format12_get_glyph(const struct dwrite_cmap *cmap, unsigned int ch)
 {
     const UINT32 *groups = cmap->data;
-    const UINT32 *group_found;
+    const UINT32 * HOSTPTR group_found;
 
     if (!(group_found = bsearch(&ch, groups, cmap->u.format12_13.group_count, 3 * sizeof(*groups),
             cmap_format12_13_compare_group)))
@@ -1694,7 +1694,7 @@ static unsigned int opentype_cmap_format12_13_get_ranges(const struct dwrite_cma
 static UINT16 opentype_cmap_format13_get_glyph(const struct dwrite_cmap *cmap, unsigned int ch)
 {
     const UINT32 *groups = cmap->data;
-    const UINT32 *group_found;
+    const UINT32 * HOSTPTR group_found;
 
     if (!(group_found = bsearch(&ch, groups, cmap->u.format12_13.group_count, 3 * sizeof(*groups),
             cmap_format12_13_compare_group)))
@@ -1725,10 +1725,10 @@ UINT16 opentype_cmap_get_glyph(const struct dwrite_cmap *cmap, unsigned int ch)
     return glyph;
 }
 
-static int cmap_header_compare(const void *a, const void *b)
+static int cmap_header_compare(const void * HOSTPTR a, const void * HOSTPTR b)
 {
-    const UINT16 *key = a;
-    const UINT16 *record = b;
+    const UINT16 * HOSTPTR key = a;
+    const UINT16 * HOSTPTR record = b;
 
     /* Platform. */
     if (key[0] < GET_BE_WORD(record[0])) return -1;
@@ -1755,7 +1755,7 @@ void dwrite_cmap_init(struct dwrite_cmap *cmap, IDWriteFontFile *file, unsigned 
         { 0, 1 },
         { 0, 0 },
     };
-    const struct cmap_encoding_record *records, *found_record = NULL;
+    const struct cmap_encoding_record *records, * HOSTPTR found_record = NULL;
     unsigned int length, offset, format, count, f, i, num_records;
     struct file_stream_desc stream_desc;
     struct dwrite_fonttable table;
@@ -2861,10 +2861,10 @@ HRESULT opentype_get_cpal_entries(const struct dwrite_fonttable *cpal, unsigned 
     return S_OK;
 }
 
-static int colr_compare_gid(const void *g, const void *r)
+static int colr_compare_gid(const void * HOSTPTR g, const void * HOSTPTR r)
 {
-    const struct colr_baseglyph_record *record = r;
-    UINT16 glyph = *(UINT16*)g, GID = GET_BE_WORD(record->glyph);
+    const struct colr_baseglyph_record * HOSTPTR record = r;
+    UINT16 glyph = *(UINT16* HOSTPTR)g, GID = GET_BE_WORD(record->glyph);
     int ret = 0;
 
     if (glyph > GID)
@@ -2878,7 +2878,7 @@ static int colr_compare_gid(const void *g, const void *r)
 HRESULT opentype_get_colr_glyph(const struct dwrite_fonttable *colr, UINT16 glyph, struct dwrite_colorglyph *ret)
 {
     unsigned int num_baseglyph_records, offset_baseglyph_records;
-    const struct colr_baseglyph_record *record;
+    const struct colr_baseglyph_record * HOSTPTR record;
     const struct colr_layer_record *layer;
     const struct colr_header *header;
 
@@ -3219,10 +3219,10 @@ unsigned int opentype_layout_find_language(const struct scriptshaping_cache *cac
     return 0;
 }
 
-static int gdef_class_compare_format2(const void *g, const void *r)
+static int gdef_class_compare_format2(const void * HOSTPTR g, const void * HOSTPTR r)
 {
-    const struct ot_gdef_class_range *range = r;
-    UINT16 glyph = *(UINT16 *)g;
+    const struct ot_gdef_class_range * HOSTPTR range = r;
+    UINT16 glyph = *(UINT16 * HOSTPTR)g;
 
     if (glyph < GET_BE_WORD(range->start_glyph))
         return -1;
@@ -3263,7 +3263,7 @@ static unsigned int opentype_layout_get_glyph_class(const struct dwrite_fonttabl
         format2 = table_read_ensure(table, offset, FIELD_OFFSET(struct ot_gdef_classdef_format2, ranges[count]));
         if (format2)
         {
-            const struct ot_gdef_class_range *range = bsearch(&glyph, format2->ranges, count,
+            const struct ot_gdef_class_range * HOSTPTR range = bsearch(&glyph, format2->ranges, count,
                     sizeof(struct ot_gdef_class_range), gdef_class_compare_format2);
             glyph_class = range && glyph <= GET_BE_WORD(range->end_glyph) ?
                     GET_BE_WORD(range->glyph_class) : GDEF_CLASS_UNCLASSIFIED;
@@ -3328,23 +3328,23 @@ struct coverage_compare_format1_context
     unsigned int *coverage_index;
 };
 
-static int coverage_compare_format1(const void *left, const void *right)
+static int coverage_compare_format1(const void * HOSTPTR left, const void * HOSTPTR right)
 {
-    const struct coverage_compare_format1_context *context = left;
-    UINT16 glyph = GET_BE_WORD(*(UINT16 *)right);
+    const struct coverage_compare_format1_context * HOSTPTR context = left;
+    UINT16 glyph = GET_BE_WORD(*(UINT16 * HOSTPTR)right);
     int ret;
 
     ret = context->glyph - glyph;
     if (!ret)
-        *context->coverage_index = (UINT16 *)right - context->table_base;
+        *context->coverage_index = (UINT16 * HOSTPTR)right - context->table_base;
 
     return ret;
 }
 
-static int coverage_compare_format2(const void *g, const void *r)
+static int coverage_compare_format2(const void * HOSTPTR g, const void * HOSTPTR r)
 {
-    const struct ot_coverage_range *range = r;
-    UINT16 glyph = *(UINT16 *)g;
+    const struct ot_coverage_range * HOSTPTR range = r;
+    UINT16 glyph = *(UINT16 * HOSTPTR)g;
 
     if (glyph < GET_BE_WORD(range->start_glyph))
         return -1;
@@ -3385,7 +3385,7 @@ static unsigned int opentype_layout_is_glyph_covered(const struct dwrite_fonttab
                 FIELD_OFFSET(struct ot_coverage_format2, ranges[count]));
         if (format2)
         {
-            const struct ot_coverage_range *range = bsearch(&glyph, format2->ranges, count,
+            const struct ot_coverage_range * HOSTPTR range = bsearch(&glyph, format2->ranges, count,
                     sizeof(struct ot_coverage_range), coverage_compare_format2);
             return range && glyph <= GET_BE_WORD(range->end_glyph) ?
                     GET_BE_WORD(range->startcoverage_index) + glyph - GET_BE_WORD(range->start_glyph) :
@@ -3450,7 +3450,7 @@ static int opentype_layout_gpos_get_dev_value(const struct scriptshaping_context
 }
 
 static void opentype_layout_apply_gpos_value(struct scriptshaping_context *context, unsigned int table_offset,
-        WORD value_format, const WORD *values, unsigned int glyph)
+        WORD value_format, const WORD * HOSTPTR values, unsigned int glyph)
 {
     const struct scriptshaping_cache *cache = context->cache;
     DWRITE_GLYPH_OFFSET *offset = &context->offsets[glyph];
@@ -3800,11 +3800,11 @@ static BOOL opentype_layout_apply_gpos_single_adjustment(struct scriptshaping_co
     return TRUE;
 }
 
-static int gpos_pair_adjustment_compare_format1(const void *g, const void *r)
+static int gpos_pair_adjustment_compare_format1(const void * HOSTPTR g, const void * HOSTPTR r)
 {
-    const struct ot_gpos_pairvalue *pairvalue = r;
+    const struct ot_gpos_pairvalue * HOSTPTR pairvalue = r;
     UINT16 second_glyph = GET_BE_WORD(pairvalue->second_glyph);
-    return *(UINT16 *)g - second_glyph;
+    return *(UINT16 * HOSTPTR)g - second_glyph;
 }
 
 static BOOL opentype_layout_apply_gpos_pair_adjustment(struct scriptshaping_context *context,
@@ -3850,7 +3850,7 @@ static BOOL opentype_layout_apply_gpos_pair_adjustment(struct scriptshaping_cont
                 pairset_count));
         unsigned int pairvalue_len, pairset_offset;
         const struct ot_gpos_pairset *pairset;
-        const WORD *pairvalue;
+        const WORD * HOSTPTR pairvalue;
         WORD pairvalue_count;
 
         if (!pairset_count || coverage_index >= pairset_count)
@@ -4330,10 +4330,10 @@ struct lookups
     size_t count;
 };
 
-static int lookups_sorting_compare(const void *a, const void *b)
+static int lookups_sorting_compare(const void * HOSTPTR a, const void * HOSTPTR b)
 {
-    const struct lookup *left = (const struct lookup *)a;
-    const struct lookup *right = (const struct lookup *)b;
+    const struct lookup * HOSTPTR left = (const struct lookup * HOSTPTR)a;
+    const struct lookup * HOSTPTR right = (const struct lookup * HOSTPTR)b;
     return left->index < right->index ? -1 : left->index > right->index ? 1 : 0;
 };
 
@@ -4576,17 +4576,17 @@ static void opentype_layout_collect_lookups(struct scriptshaping_context *contex
     }
 }
 
-static int feature_search_compare(const void *a, const void* b)
+static int feature_search_compare(const void * HOSTPTR a, const void * HOSTPTR b)
 {
-    unsigned int tag = *(unsigned int *)a;
-    const struct shaping_feature *feature = b;
+    unsigned int tag = *(unsigned int * HOSTPTR)a;
+    const struct shaping_feature * HOSTPTR feature = b;
 
     return tag < feature->tag ? -1 : tag > feature->tag ? 1 : 0;
 }
 
 static unsigned int shaping_features_get_mask(const struct shaping_features *features, unsigned int tag, unsigned int *shift)
 {
-    struct shaping_feature *feature;
+    struct shaping_feature * HOSTPTR feature;
 
     feature = bsearch(&tag, features->features, features->count, sizeof(*features->features), feature_search_compare);
 

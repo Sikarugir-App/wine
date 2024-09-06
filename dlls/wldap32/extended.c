@@ -252,8 +252,10 @@ ULONG CDECL ldap_extended_operation_sW( WLDAP32_LDAP *ld, PWCHAR oid, struct WLD
 {
     ULONG ret = WLDAP32_LDAP_NOT_SUPPORTED;
 #ifdef HAVE_LDAP
-    char *oidU = NULL, *retoidU = NULL;
+    char *oidU = NULL, * HOSTPTR retoidU = NULL;
     LDAPControl **serverctrlsU = NULL, **clientctrlsU = NULL;
+    struct berval *bvret = NULL;
+    struct berval bvdata;
 
     ret = WLDAP32_LDAP_NO_MEMORY;
 
@@ -275,11 +277,14 @@ ULONG CDECL ldap_extended_operation_sW( WLDAP32_LDAP *ld, PWCHAR oid, struct WLD
         if (!clientctrlsU) goto exit;
     }
 
-    ret = map_error( ldap_extended_operation_s( ld->ld, oid ? oidU : "", (struct berval *)data, serverctrlsU,
-                                                clientctrlsU, &retoidU, (struct berval **)retdata ));
+    ret = map_error( ldap_extended_operation_s( ld->ld, oid ? oidU : "", data ? &bvdata : NULL, serverctrlsU,
+                                                clientctrlsU, &retoidU, &bvret ));
+    ret = bvconvert_and_free( ret, bvret, retdata );
 
     if (retoid && retoidU) {
-        *retoid = strUtoW( retoidU );
+        char *copy = heap_strdup(retoidU);
+        *retoid = strUtoW( copy );
+        heap_free(copy);
         if (!*retoid) ret = WLDAP32_LDAP_NO_MEMORY;
         ldap_memfree( retoidU );
     }

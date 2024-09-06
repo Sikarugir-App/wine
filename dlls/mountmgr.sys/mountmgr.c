@@ -519,6 +519,7 @@ static SecKeychainItemRef find_credential( const WCHAR *name )
         SecKeychainAttributeList *attr_list;
         UInt32 info_tags[] = { kSecServiceItemAttr };
         WCHAR *itemname;
+        char *copy;
         int len;
 
         info.count = ARRAY_SIZE(info_tags);
@@ -535,14 +536,18 @@ static SecKeychainItemRef find_credential( const WCHAR *name )
             CFRelease( item );
             continue;
         }
-        len = MultiByteToWideChar( CP_UTF8, 0, attr_list->attr[0].data, attr_list->attr[0].length, NULL, 0 );
+        copy = RtlAllocateHeap( GetProcessHeap(), 0, attr_list->attr[0].length );
+        memcpy( copy, attr_list->attr[0].data, attr_list->attr[0].length );
+        len = MultiByteToWideChar( CP_UTF8, 0, copy, attr_list->attr[0].length, NULL, 0 );
         if (!(itemname = RtlAllocateHeap( GetProcessHeap(), 0, (len + 1) * sizeof(WCHAR) )))
         {
             CFRelease( item );
             CFRelease( search );
+            RtlFreeHeap( GetProcessHeap(), 0, copy );
             return NULL;
         }
-        MultiByteToWideChar( CP_UTF8, 0, attr_list->attr[0].data, attr_list->attr[0].length, itemname, len );
+        MultiByteToWideChar( CP_UTF8, 0, copy, attr_list->attr[0].length, itemname, len );
+        RtlFreeHeap( GetProcessHeap(), 0, copy );
         itemname[len] = 0;
         if (strcmpiW( itemname, name ))
         {
@@ -567,12 +572,13 @@ static NTSTATUS fill_credential( SecKeychainItemRef item, BOOL require_password,
     int status, len;
     SIZE_T size;
     UInt32 i, cred_blob_len = 0;
-    void *cred_blob;
+    void * HOSTPTR cred_blob;
     WCHAR *ptr;
     BOOL user_name_present = FALSE;
     SecKeychainAttributeInfo info;
     SecKeychainAttributeList *attr_list = NULL;
     UInt32 info_tags[] = { kSecServiceItemAttr, kSecAccountItemAttr, kSecCommentItemAttr, kSecCreationDateItemAttr };
+    char *copy;
 
     info.count  = ARRAY_SIZE(info_tags);
     info.tag    = info_tags;
@@ -610,59 +616,68 @@ static NTSTATUS fill_credential( SecKeychainItemRef item, BOOL require_password,
         switch (attr_list->attr[i].tag)
         {
             case kSecServiceItemAttr:
-                TRACE( "kSecServiceItemAttr: %.*s\n", (int)attr_list->attr[i].length, (char *)attr_list->attr[i].data );
+                TRACE( "kSecServiceItemAttr: %.*s\n", (int)attr_list->attr[i].length, (char * HOSTPTR)attr_list->attr[i].data );
                 if (cred) cred->targetname_offset = cred->targetname_size = 0;
                 if (!attr_list->attr[i].data) continue;
 
-                len = MultiByteToWideChar( CP_UTF8, 0, attr_list->attr[i].data, attr_list->attr[i].length, NULL, 0 );
+                copy = RtlAllocateHeap( GetProcessHeap(), 0, attr_list->attr[i].length);
+                memcpy( copy, attr_list->attr[i].data, attr_list->attr[i].length );
+                len = MultiByteToWideChar( CP_UTF8, 0, copy, attr_list->attr[i].length, NULL, 0 );
                 size = (len + 1) * sizeof(WCHAR);
                 if (cred && *retlen + size <= buflen)
                 {
                     cred->targetname_offset = data_offset;
                     cred->targetname_size   = size;
                     ptr = (WCHAR *)((char *)cred + cred->targetname_offset);
-                    MultiByteToWideChar( CP_UTF8, 0, attr_list->attr[i].data, attr_list->attr[i].length, ptr, len );
+                    MultiByteToWideChar( CP_UTF8, 0, copy, attr_list->attr[i].length, ptr, len );
                     ptr[len] = 0;
                     data_offset += size;
                 }
+                RtlFreeHeap (GetProcessHeap(), 0, copy);
                 *retlen += size;
                 break;
             case kSecAccountItemAttr:
             {
-                TRACE( "kSecAccountItemAttr: %.*s\n", (int)attr_list->attr[i].length, (char *)attr_list->attr[i].data );
+                TRACE( "kSecAccountItemAttr: %.*s\n", (int)attr_list->attr[i].length, (char * HOSTPTR)attr_list->attr[i].data );
                 if (cred) cred->username_offset = cred->username_size = 0;
                 if (!attr_list->attr[i].data) continue;
 
-                len = MultiByteToWideChar( CP_UTF8, 0, attr_list->attr[i].data, attr_list->attr[i].length, NULL, 0 );
+                copy = RtlAllocateHeap( GetProcessHeap(), 0, attr_list->attr[i].length);
+                memcpy( copy, attr_list->attr[i].data, attr_list->attr[i].length );
+                len = MultiByteToWideChar( CP_UTF8, 0, copy, attr_list->attr[i].length, NULL, 0 );
                 size = (len + 1) * sizeof(WCHAR);
                 if (cred && *retlen + size <= buflen)
                 {
                     cred->username_offset = data_offset;
                     cred->username_size   = size;
                     ptr = (WCHAR *)((char *)cred + cred->username_offset);
-                    MultiByteToWideChar( CP_UTF8, 0, attr_list->attr[i].data, attr_list->attr[i].length, ptr, len );
+                    MultiByteToWideChar( CP_UTF8, 0, copy, attr_list->attr[i].length, ptr, len );
                     ptr[len] = 0;
                     data_offset += size;
                 }
+                RtlFreeHeap (GetProcessHeap(), 0, copy);
                 *retlen += size;
                 break;
             }
             case kSecCommentItemAttr:
-                TRACE( "kSecCommentItemAttr: %.*s\n", (int)attr_list->attr[i].length, (char *)attr_list->attr[i].data );
+                TRACE( "kSecCommentItemAttr: %.*s\n", (int)attr_list->attr[i].length, (char * HOSTPTR)attr_list->attr[i].data );
                 if (cred) cred->comment_offset = cred->comment_size = 0;
                 if (!attr_list->attr[i].data) continue;
 
-                len = MultiByteToWideChar( CP_UTF8, 0, attr_list->attr[i].data, attr_list->attr[i].length, NULL, 0 );
+                copy = RtlAllocateHeap( GetProcessHeap(), 0, attr_list->attr[i].length);
+                memcpy( copy, attr_list->attr[i].data, attr_list->attr[i].length );
+                len = MultiByteToWideChar( CP_UTF8, 0, copy, attr_list->attr[i].length, NULL, 0 );
                 size = (len + 1) * sizeof(WCHAR);
                 if (cred && *retlen + size <= buflen)
                 {
                     cred->comment_offset = data_offset;
                     cred->comment_size   = size;
                     ptr = (WCHAR *)((char *)cred + cred->comment_offset);
-                    len = MultiByteToWideChar( CP_UTF8, 0, attr_list->attr[i].data, attr_list->attr[i].length, ptr, len );
+                    len = MultiByteToWideChar( CP_UTF8, 0, copy, attr_list->attr[i].length, ptr, len );
                     ptr[len] = 0;
                     data_offset += size;
                 }
+                RtlFreeHeap (GetProcessHeap(), 0, copy);
                 *retlen += size;
                 break;
             case kSecCreationDateItemAttr:
@@ -671,7 +686,7 @@ static NTSTATUS fill_credential( SecKeychainItemRef item, BOOL require_password,
                 struct tm tm;
                 time_t time;
 
-                TRACE( "kSecCreationDateItemAttr: %.*s\n", (int)attr_list->attr[i].length, (char *)attr_list->attr[i].data );
+                TRACE( "kSecCreationDateItemAttr: %.*s\n", (int)attr_list->attr[i].length, (char * HOSTPTR)attr_list->attr[i].data );
                 if (cred) cred->last_written.dwLowDateTime = cred->last_written.dwHighDateTime = 0;
                 if (!attr_list->attr[i].data) continue;
 
@@ -696,11 +711,14 @@ static NTSTATUS fill_credential( SecKeychainItemRef item, BOOL require_password,
     {
         if (*retlen + cred_blob_len <= buflen)
         {
-            len = MultiByteToWideChar( CP_UTF8, 0, cred_blob, cred_blob_len, NULL, 0 );
+            copy = RtlAllocateHeap( GetProcessHeap(), 0, cred_blob_len);
+            memcpy (copy, cred_blob, cred_blob_len);
+            len = MultiByteToWideChar( CP_UTF8, 0, copy, cred_blob_len, NULL, 0 );
             cred->blob_offset = data_offset;
             cred->blob_size   = len * sizeof(WCHAR);
             ptr = (WCHAR *)((char *)cred + cred->blob_offset);
-            MultiByteToWideChar( CP_UTF8, 0, cred_blob, cred_blob_len, ptr, len );
+            MultiByteToWideChar( CP_UTF8, 0, copy, cred_blob_len, ptr, len );
+            RtlFreeHeap( GetProcessHeap(), 0, copy);
         }
         else cred->blob_offset = cred->blob_size = 0;
     }
@@ -742,6 +760,7 @@ static NTSTATUS write_credential( void *buff, SIZE_T insize, SIZE_T outsize, IO_
     SecKeychainAttribute attrs[1];
     SecKeychainAttributeList attr_list;
     NTSTATUS ret = STATUS_NO_MEMORY;
+    char *data_win32;
 
     if (!check_credential_string( buff, insize, cred->targetname_size, cred->targetname_offset ) ||
         !check_credential_string( buff, insize, cred->username_size, cred->username_offset ) ||
@@ -795,8 +814,9 @@ static NTSTATUS write_credential( void *buff, SIZE_T insize, SIZE_T outsize, IO_
         ptr = (const WCHAR *)((const char *)cred + cred->comment_offset);
         attrs[0].length = WideCharToMultiByte( CP_UTF8, 0, ptr, -1, NULL, 0, NULL, NULL );
         if (attrs[0].length) attrs[0].length--;
-        if (!(attrs[0].data = RtlAllocateHeap( GetProcessHeap(), 0, attrs[0].length ))) goto error;
-        WideCharToMultiByte( CP_UTF8, 0, ptr, -1, attrs[0].data, attrs[0].length, NULL, NULL );
+        if (!(data_win32 = RtlAllocateHeap( GetProcessHeap(), 0, attrs[0].length ))) goto error;
+        WideCharToMultiByte( CP_UTF8, 0, ptr, -1, data_win32, attrs[0].length, NULL, NULL );
+        attrs[0].data = data_win32;
     }
     else
     {
@@ -806,7 +826,7 @@ static NTSTATUS write_credential( void *buff, SIZE_T insize, SIZE_T outsize, IO_
     status = SecKeychainItemModifyAttributesAndData( keychain_item, &attr_list, cred->blob_preserve ? 0 : len_password,
                                                      cred->blob_preserve ? NULL : password );
 
-    if (cred->comment_size) RtlFreeHeap( GetProcessHeap(), 0, attrs[0].data );
+    if (cred->comment_size) RtlFreeHeap( GetProcessHeap(), 0, data_win32 );
     RtlFreeHeap( GetProcessHeap(), 0, password );
     /* FIXME: set TargetAlias attribute */
     CFRelease( keychain_item );
@@ -837,18 +857,27 @@ static NTSTATUS delete_credential( void *buff, SIZE_T insize, SIZE_T outsize, IO
     return STATUS_SUCCESS;
 }
 
-static BOOL match_credential( void *data, UInt32 data_len, const WCHAR *filter )
+static BOOL match_credential( void * HOSTPTR data, UInt32 data_len, const WCHAR *filter )
 {
     int len;
     WCHAR *targetname;
     const WCHAR *p;
     BOOL ret;
+    char *copy;
 
     if (!*filter) return TRUE;
 
-    len = MultiByteToWideChar( CP_UTF8, 0, data, data_len, NULL, 0 );
-    if (!(targetname = RtlAllocateHeap( GetProcessHeap(), 0, (len + 1) * sizeof(WCHAR) ))) return FALSE;
-    MultiByteToWideChar( CP_UTF8, 0, data, data_len, targetname, len );
+    copy = RtlAllocateHeap( GetProcessHeap(), 0, data_len );
+    if (!copy) return FALSE;
+    memcpy( copy, data, data_len);
+    len = MultiByteToWideChar( CP_UTF8, 0, copy, data_len, NULL, 0 );
+    if (!(targetname = RtlAllocateHeap( GetProcessHeap(), 0, (len + 1) * sizeof(WCHAR) )))
+    {
+        RtlFreeHeap( GetProcessHeap(), 0, copy );
+        return FALSE;
+    }
+    MultiByteToWideChar( CP_UTF8, 0, copy, data_len, targetname, len );
+    RtlFreeHeap( GetProcessHeap(), 0, copy );
     targetname[len] = 0;
 
     TRACE( "comparing filter %s to target name %s\n", debugstr_w(filter), debugstr_w(targetname) );
@@ -899,7 +928,7 @@ static NTSTATUS search_credentials( const WCHAR *filter, struct mountmgr_credent
             CFRelease( item );
             continue;
         }
-        TRACE( "service item: %.*s\n", (int)attr_list->attr[0].length, (char *)attr_list->attr[0].data );
+        TRACE( "service item: %.*s\n", (int)attr_list->attr[0].length, (char * HOSTPTR)attr_list->attr[0].data );
 
         match = match_credential( attr_list->attr[0].data, attr_list->attr[0].length, filter );
         SecKeychainItemFreeAttributesAndData( attr_list, NULL );

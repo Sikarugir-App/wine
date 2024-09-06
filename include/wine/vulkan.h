@@ -19,6 +19,11 @@
 #ifdef WINE_VK_HOST
 #define VKAPI_CALL
 #define WINE_VK_ALIGN(x)
+#define VKPTR HOSTPTR
+#include <wine/hostaddrspace_enter.h>
+#else
+#define VKPTR
+#include <wine/winheader_enter.h>
 #endif
 
 #ifndef VKAPI_CALL
@@ -9051,5 +9056,11 @@ VkResult VKAPI_CALL vkWaitSemaphores(VkDevice device, const VkSemaphoreWaitInfo 
 VkResult VKAPI_CALL vkWaitSemaphoresKHR(VkDevice device, const VkSemaphoreWaitInfo *pWaitInfo, uint64_t timeout);
 VkResult VKAPI_CALL vkWriteAccelerationStructuresPropertiesKHR(VkDevice device, uint32_t accelerationStructureCount, const VkAccelerationStructureKHR *pAccelerationStructures, VkQueryType queryType, size_t dataSize, void *pData, size_t stride);
 #endif /* VK_NO_PROTOTYPES */
+
+#ifdef WINE_VK_HOST
+#include <wine/hostaddrspace_exit.h>
+#else
+#include <wine/winheader_exit.h>
+#endif
 
 #endif /* __WINE_VULKAN_H */

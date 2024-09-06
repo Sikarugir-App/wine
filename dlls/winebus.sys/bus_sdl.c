@@ -44,6 +44,7 @@
 #include "ddk/hidtypes.h"
 #include "wine/debug.h"
 #include "wine/unicode.h"
+#include "wine/heap.h"
 #include "hidusage.h"
 #include "controller.h"
 
@@ -65,7 +66,7 @@ static const WCHAR sdl_busidW[] = {'S','D','L','J','O','Y',0};
 
 static DWORD map_controllers = 0;
 
-static void *sdl_handle = NULL;
+static void * HOSTPTR sdl_handle = NULL;
 static HANDLE deviceloop_handle;
 static UINT quit_event = -1;
 
@@ -108,9 +109,9 @@ MAKE_FUNCPTR(SDL_memset);
 MAKE_FUNCPTR(SDL_GameControllerAddMapping);
 MAKE_FUNCPTR(SDL_RegisterEvents);
 MAKE_FUNCPTR(SDL_PushEvent);
-static Uint16 (*pSDL_JoystickGetProduct)(SDL_Joystick * joystick);
-static Uint16 (*pSDL_JoystickGetProductVersion)(SDL_Joystick * joystick);
-static Uint16 (*pSDL_JoystickGetVendor)(SDL_Joystick * joystick);
+static Uint16 (* HOSTPTR pSDL_JoystickGetProduct)(SDL_Joystick * joystick);
+static Uint16 (* HOSTPTR pSDL_JoystickGetProductVersion)(SDL_Joystick * joystick);
+static Uint16 (* HOSTPTR pSDL_JoystickGetVendor)(SDL_Joystick * joystick);
 
 struct platform_private
 {
@@ -606,10 +607,10 @@ static BOOL build_mapped_report_descriptor(struct platform_private *ext)
     return TRUE;
 }
 
-static int compare_platform_device(DEVICE_OBJECT *device, void *platform_dev)
+static int compare_platform_device(DEVICE_OBJECT *device, void * HOSTPTR platform_dev)
 {
     SDL_JoystickID id1 = impl_from_DEVICE_OBJECT(device)->id;
-    SDL_JoystickID id2 = PtrToUlong(platform_dev);
+    SDL_JoystickID id2 = PtrToUlong(ADDRSPACECAST(void*, platform_dev));
     return (id1 != id2);
 }
 
@@ -630,7 +631,7 @@ static NTSTATUS get_reportdescriptor(DEVICE_OBJECT *device, BYTE *buffer, DWORD 
 static NTSTATUS get_string(DEVICE_OBJECT *device, DWORD index, WCHAR *buffer, DWORD length)
 {
     struct platform_private *ext = impl_from_DEVICE_OBJECT(device);
-    const char* str = NULL;
+    const char* HOSTPTR str = NULL;
 
     switch (index)
     {
@@ -651,7 +652,11 @@ static NTSTATUS get_string(DEVICE_OBJECT *device, DWORD index, WCHAR *buffer, DW
     }
 
     if (str && str[0])
-        MultiByteToWideChar(CP_ACP, 0, str, -1, buffer, length);
+    {
+        char *copy = heap_strdup(str);
+        MultiByteToWideChar(CP_ACP, 0, copy, -1, buffer, length);
+        heap_free(copy);
+    }
     else
         buffer[0] = 0;
 
@@ -1022,7 +1027,7 @@ static DWORD CALLBACK deviceloop_thread(void *args)
     {
         HKEY key;
         static const WCHAR szPath[] = {'m','a','p',0};
-        const char *mapping;
+        const char * HOSTPTR mapping;
 
         if ((mapping = getenv("SDL_GAMECONTROLLERCONFIG")))
         {

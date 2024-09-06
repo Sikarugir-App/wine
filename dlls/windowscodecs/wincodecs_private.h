@@ -312,9 +312,17 @@ struct decoder_funcs
 };
 
 HRESULT CDECL stream_getsize(IStream *stream, ULONGLONG *size);
+#ifdef __i386_on_x86_64__
+HRESULT CDECL stream_read(IStream *stream, void * __ptr64 buffer, ULONG read, ULONG *bytes_read);
+#else
 HRESULT CDECL stream_read(IStream *stream, void *buffer, ULONG read, ULONG *bytes_read);
+#endif
 HRESULT CDECL stream_seek(IStream *stream, LONGLONG ofs, DWORD origin, ULONGLONG *new_position);
+#ifdef __i386_on_x86_64__
+HRESULT CDECL stream_write(IStream *stream, const void * __ptr64 buffer, ULONG write, ULONG *bytes_written);
+#else
 HRESULT CDECL stream_write(IStream *stream, const void *buffer, ULONG write, ULONG *bytes_written);
+#endif
 
 struct win32_funcs
 {

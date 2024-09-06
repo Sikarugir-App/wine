@@ -132,8 +132,8 @@ static CRITICAL_SECTION device_section = { &critsect_debug, -1, 0, 0, 0, 0 };
 
 static char *get_dosdevices_path( char **device )
 {
-    const char *home = getenv( "HOME" );
-    const char *prefix = getenv( "WINEPREFIX" );
+    const char * HOSTPTR home = getenv( "HOME" );
+    const char * HOSTPTR prefix = getenv( "WINEPREFIX" );
     size_t len = (prefix ? strlen(prefix) : strlen(home) + strlen("/.wine")) + sizeof("/dosdevices/com256");
     char *path = HeapAlloc( GetProcessHeap(), 0, len );
 
@@ -262,8 +262,8 @@ static int open_volume_file( const struct volume *volume, const char *file )
     }
     else
     {
-        const char *home = getenv( "HOME" );
-        const char *prefix = getenv( "WINEPREFIX" );
+        const char * HOSTPTR home = getenv( "HOME" );
+        const char * HOSTPTR prefix = getenv( "WINEPREFIX" );
         size_t len = prefix ? strlen(prefix) : strlen(home) + strlen("/.wine");
 
         if (!(path = HeapAlloc( GetProcessHeap(), 0, len + strlen("/dosdevices/") +
@@ -1721,7 +1721,7 @@ NTSTATUS query_dos_device( int letter, enum device_type *type, enum mountmgr_fs_
 
 /* query information about an existing unix device, by dev_t */
 NTSTATUS query_unix_device( ULONGLONG unix_dev, enum device_type *type,
-                            enum mountmgr_fs_type *fs_type, DWORD *serial, char **device,
+                            DWORD *serial, enum mountmgr_fs_type *fs_type, char **device,
                             char **mount_point, WCHAR **label )
 {
     NTSTATUS status = STATUS_NO_SUCH_DEVICE;

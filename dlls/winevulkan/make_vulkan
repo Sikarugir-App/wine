@@ -1093,6 +1093,8 @@ class VkMember(object):
         elif self.is_static_array():
             bytes_count = "{0} * sizeof({1})".format(self.array_len, self.type)
             return "memcpy({0}{1}, {2}{1}, {3});\n".format(output, self.name, input, bytes_count)
+        elif direction == Direction.OUTPUT and self.name == "pNext":
+            return "{0}{1} = ADDRSPACECAST(void * WIN32PTR, {2}{1});\n".format(output, self.name, input)
         else:
             return "{0}{1} = {2}{1};\n".format(output, self.name, input)
 
@@ -2177,6 +2179,8 @@ class VkGenerator(object):
 
         f.write("#include \"vulkan_private.h\"\n\n")
 
+        f.write("#include \"wine/hostptraddrspace_enter.h\"\n\n")
+
         f.write("WINE_DEFAULT_DEBUG_CHANNEL(vulkan);\n\n")
 
         # Generate any conversion helper functions.
@@ -2331,6 +2335,8 @@ class VkGenerator(object):
 
         f.write("#define WINE_VK_VERSION VK_API_VERSION_{0}_{1}\n\n".format(WINE_VK_VERSION[0], WINE_VK_VERSION[1]))
 
+        f.write("#include \"wine/hostptraddrspace_enter.h\"\n\n")
+
         # Generate prototypes for device and instance functions requiring a custom implementation.
         f.write("/* Functions for which we have custom implementations outside of the thunks. */\n")
         for vk_func in self.registry.funcs.values():
@@ -2433,6 +2439,8 @@ class VkGenerator(object):
                 f.write(" \\\n    USE_VK_FUNC({0})".format(vk_func.name))
         f.write("\n\n")
 
+        f.write("#include \"wine/hostptraddrspace_exit.h\"\n\n")
+
         f.write("#endif /* __WINE_VULKAN_THUNKS_H */\n")
 
     def generate_vulkan_h(self, f):
@@ -2447,6 +2455,9 @@ class VkGenerator(object):
         f.write("#ifdef WINE_VK_HOST\n")
         f.write("#define VKAPI_CALL\n")
         f.write('#define WINE_VK_ALIGN(x)\n')
+        f.write("#include <wine/hostaddrspace_enter.h>\n")
+        f.write('#else\n')
+        f.write("#include <wine/winheader_enter.h>\n")
         f.write("#endif\n\n")
 
         f.write("#ifndef VKAPI_CALL\n")
@@ -2527,6 +2538,12 @@ class VkGenerator(object):
             f.write("{0};\n".format(func.prototype(call_conv="VKAPI_CALL")))
         f.write("#endif /* VK_NO_PROTOTYPES */\n\n")
 
+        f.write("#ifdef WINE_VK_HOST\n")
+        f.write("#include <wine/hostaddrspace_exit.h>\n")
+        f.write('#else\n')
+        f.write("#include <wine/winheader_exit.h>\n")
+        f.write("#endif\n\n")
+
         f.write("#endif /* __WINE_VULKAN_H */\n")
 
     def generate_vulkan_driver_h(self, f):
@@ -2536,6 +2553,8 @@ class VkGenerator(object):
 
         f.write("/* Wine internal vulkan driver version, needs to be bumped upon vulkan_funcs changes. */\n")
         f.write("#define WINE_VULKAN_DRIVER_VERSION {0}\n\n".format(DRIVER_VERSION))
+
+        f.write("#include \"wine/winheader_enter.h\"\n\n")
 
         f.write("struct vulkan_funcs\n{\n")
         f.write("    /* Vulkan global functions. These are the only calls at this point a graphics driver\n")
@@ -2584,6 +2603,8 @@ class VkGenerator(object):
         f.write("\n")
         f.write("    name -= 2;\n\n")
         f.write("    return get_vulkan_driver_device_proc_addr(vulkan_funcs, name);\n}\n\n")
+
+        f.write("#include \"wine/winheader_exit.h\"\n\n")
 
         f.write("#endif /* __WINE_VULKAN_DRIVER_H */\n")
 

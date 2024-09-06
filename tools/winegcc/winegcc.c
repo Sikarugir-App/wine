@@ -245,6 +245,8 @@ struct options
 
 #ifdef __i386__
 static const enum target_cpu build_cpu = CPU_x86;
+#elif defined(__i386_on_x86_64__)
+static const enum target_cpu build_cpu = CPU_x86_32on64;
 #elif defined(__x86_64__)
 static const enum target_cpu build_cpu = CPU_x86_64;
 #elif defined(__powerpc__)
@@ -473,6 +475,13 @@ static strarray *get_link_args( struct options *opts, const char *output_name )
             strarray_add( flags, "-read_only_relocs" );
             strarray_add( flags, "warning" );
         }
+        if (opts->target_cpu == CPU_x86_32on64)
+        {
+            strarray_add( flags, "-sectcreate" );
+            strarray_add( flags, "WINE_32on64" );
+            strarray_add( flags, "WINE_32on64" );
+            strarray_add( flags, "/dev/null" );
+        }
         if (opts->image_base)
         {
             strarray_add( flags, "-image_base" );
@@ -610,9 +619,9 @@ static int check_platform( struct options *opts, const char *file )
             if (!memcmp( header, "\177ELF", 4 ))
             {
                 if (header[4] == 2)  /* 64-bit */
-                    ret = (opts->target_cpu == CPU_x86_64 || opts->target_cpu == CPU_ARM64);
+                    ret = (opts->target_cpu == CPU_x86_64 || opts->target_cpu == CPU_x86_32on64 || opts->target_cpu == CPU_ARM64);
                 else
-                    ret = (opts->target_cpu != CPU_x86_64 && opts->target_cpu != CPU_ARM64);
+                    ret = (opts->target_cpu != CPU_x86_64 && opts->target_cpu != CPU_x86_32on64 && opts->target_cpu != CPU_ARM64);
             }
         }
         close( fd );
@@ -625,6 +634,7 @@ static const char *get_multiarch_dir( enum target_cpu cpu )
    switch(cpu)
    {
    case CPU_x86:     return "/i386-linux-gnu";
+   case CPU_x86_32on64: /* fall through */
    case CPU_x86_64:  return "/x86_64-linux-gnu";
    case CPU_ARM:     return "/arm-linux-gnueabi";
    case CPU_ARM64:   return "/aarch64-linux-gnu";
@@ -644,7 +654,7 @@ static char *get_lib_dir( struct options *opts )
     unsigned int i;
     size_t build_len, target_len;
 
-    bit_suffix = opts->target_cpu == CPU_x86_64 || opts->target_cpu == CPU_ARM64 ? "64" : "32";
+    bit_suffix = opts->target_cpu == CPU_x86_64 || opts->target_cpu == CPU_ARM64 ? "64" : opts->target_cpu == CPU_x86_32on64 ? "32on64" : "32";
     other_bit_suffix = opts->target_cpu == CPU_x86_64 || opts->target_cpu == CPU_ARM64 ? "32" : "64";
     build_multiarch = get_multiarch_dir( build_cpu );
     target_multiarch = get_multiarch_dir( opts->target_cpu );
@@ -761,7 +771,9 @@ static void compile(struct options* opts, const char* lang)
     strarray* gpp;
 
     strarray_addall(comp_args, get_translator(opts));
-    if (opts->force_pointer_size)
+    if (opts->target_cpu == CPU_x86_32on64)
+        strarray_add( comp_args, strmake("-mwine32"));
+    else if (opts->force_pointer_size)
         strarray_add( comp_args, strmake("-m%u", 8 * opts->force_pointer_size ) );
     switch(opts->processor)
     {
@@ -834,6 +846,14 @@ static void compile(struct options* opts, const char* lang)
             strarray_add(comp_args, "-D__cdecl=__attribute__((__cdecl__)) __attribute__((__force_align_arg_pointer__))");
             strarray_add(comp_args, "-D__fastcall=__attribute__((__fastcall__))");
             break;
+        case CPU_x86_32on64:
+            strarray_add(comp_args, "-D__stdcall=__attribute__((stdcall32))");
+            strarray_add(comp_args, "-D__cdecl=__attribute__((cdecl32))");
+            strarray_add(comp_args, "-D_stdcall=__attribute__((stdcall32))");
+            strarray_add(comp_args, "-D_cdecl=__attribute__((cdecl32))");
+            strarray_add(comp_args, "-D__fastcall=__attribute__((fastcall32))");
+            strarray_add(comp_args, "-D_fastcall=__attribute__((fastcall32))");
+            break;
         case CPU_ARM:
             strarray_add(comp_args, "-D__stdcall=__attribute__((pcs(\"aapcs-vfp\")))");
             strarray_add(comp_args, "-D__cdecl=__stdcall");
@@ -866,7 +886,7 @@ static void compile(struct options* opts, const char* lang)
     strarray_add(comp_args, "-D__int8=char");
     strarray_add(comp_args, "-D__int16=short");
     strarray_add(comp_args, "-D__int32=int");
-    if (opts->target_cpu == CPU_x86_64 || opts->target_cpu == CPU_ARM64)
+    if (opts->target_cpu == CPU_x86_64 || opts->target_cpu == CPU_x86_32on64 || opts->target_cpu == CPU_ARM64)
         strarray_add(comp_args, "-D__int64=long");
     else
         strarray_add(comp_args, "-D__int64=long long");
@@ -928,7 +948,15 @@ no_compat_defines:
         }
     }
     else if (opts->wine_objdir)
-        strarray_add(comp_args, strmake("-I%s/include", opts->wine_objdir) );
+    {
+#ifdef HAVE_ILOCAL
+        if (opts->target_cpu == CPU_x86_32on64 && !opts->use_msvcrt)
+            strarray_add(comp_args, "-ilocal");
+        else
+#endif
+            strarray_add(comp_args, "-I" );
+        strarray_add(comp_args, strmake("%s/include", opts->wine_objdir) );
+    }
 
     spawn(opts->prefix, comp_args, 0);
     strarray_free(comp_args);
@@ -1264,7 +1292,9 @@ static void build(struct options* opts)
     if (!is_pe && (tool = build_tool_name( opts, TOOL_LD ))) strarray_add( spec_args, strmake( "--ld-cmd=%s", strarray_tostring( tool, " " )));
 
     spec_o_name = get_temp_file(output_name, ".spec.o");
-    if (opts->force_pointer_size)
+    if (opts->target_cpu == CPU_x86_32on64)
+        strarray_add(spec_args, strmake("-mwine32"));
+    else if (opts->force_pointer_size)
         strarray_add(spec_args, strmake("-m%u", 8 * opts->force_pointer_size ));
     if(opts->unicode_app)
         strarray_add(spec_args, "-municode");
@@ -1873,7 +1903,7 @@ int main(int argc, char **argv)
                     }
 		    else if (strcmp("-m32", opts.args->base[i]) == 0)
                     {
-                        if (opts.target_cpu == CPU_x86_64)
+                        if (opts.target_cpu == CPU_x86_64 || opts.target_cpu == CPU_x86_32on64)
                             opts.target_cpu = CPU_x86;
                         else if (opts.target_cpu == CPU_ARM64)
                             opts.target_cpu = CPU_ARM;
@@ -1882,12 +1912,19 @@ int main(int argc, char **argv)
                     }
 		    else if (strcmp("-m64", opts.args->base[i]) == 0)
                     {
-                        if (opts.target_cpu == CPU_x86)
+                        if (opts.target_cpu == CPU_x86 || opts.target_cpu == CPU_x86_32on64)
                             opts.target_cpu = CPU_x86_64;
                         else if (opts.target_cpu == CPU_ARM)
                             opts.target_cpu = CPU_ARM64;
                         opts.force_pointer_size = 8;
 			raw_linker_arg = 1;
+                    }
+                    else if (strcmp("-mwine32", opts.args->base[i]) == 0)
+                    {
+                        if (opts.target_cpu == CPU_x86_64 || opts.target_cpu == CPU_x86)
+                            opts.target_cpu = CPU_x86_32on64;
+                        opts.force_pointer_size = 8;
+                        raw_linker_arg = 1;
                     }
                     else if (!strcmp("-marm", opts.args->base[i] ) || !strcmp("-mthumb", opts.args->base[i] ))
                     {

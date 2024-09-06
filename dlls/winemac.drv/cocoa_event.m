@@ -24,6 +24,8 @@
 #include <libkern/OSAtomic.h>
 #import <Carbon/Carbon.h>
 
+#include "wine/hostaddrspace_enter.h"
+
 #include "macdrv_cocoa.h"
 #import "cocoa_event.h"
 #import "cocoa_app.h"
@@ -105,7 +107,7 @@ static const OSType WineHotKeySignature = 'Wine';
 
     - (id) initWithEventHandler:(macdrv_event_handler)handler
     {
-        NSParameterAssert(handler != nil);
+        //NSParameterAssert(handler != nil);
 
         self = [super init];
         if (self != nil)

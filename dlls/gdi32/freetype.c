@@ -108,6 +108,7 @@
 #include "gdi_private.h"
 #include "wine/debug.h"
 #include "wine/list.h"
+#include "wine/unicode.h"
 
 #include "resource.h"
 
@@ -135,7 +136,12 @@ static FT_Version_t FT_Version;
 static DWORD FT_SimpleVersion;
 #define FT_VERSION_VALUE(major, minor, patch) (((major) << 16) | ((minor) << 8) | (patch))
 
-static void *ft_handle = NULL;
+#ifdef __i386_on_x86_64__
+#pragma clang default_addr_space(push, default)
+#pragma clang storage_addr_space(push, default)
+#endif
+
+static void * HOSTPTR ft_handle = NULL;
 
 #define MAKE_FUNCPTR(f) static typeof(f) * p##f = NULL
 MAKE_FUNCPTR(FT_Done_Face);
@@ -214,6 +220,11 @@ MAKE_FUNCPTR(FcStrSetMember);
 
 #undef MAKE_FUNCPTR
 
+#ifdef __i386_on_x86_64__
+#pragma clang default_addr_space(pop)
+#pragma clang storage_addr_space(pop)
+#endif
+
 #ifndef FT_MAKE_TAG
 #define FT_MAKE_TAG( ch0, ch1, ch2, ch3 ) \
 	( ((DWORD)(BYTE)(ch0) << 24) | ((DWORD)(BYTE)(ch1) << 16) | \
@@ -245,6 +256,9 @@ MAKE_FUNCPTR(FcStrSetMember);
 #define GASP_GRIDFIT 0x01
 #define GASP_DOGRAY  0x02
 
+#ifdef __i386_on_x86_64__
+#pragma clang default_addr_space(push, default)
+#endif
 /* FT_Bitmap_Size gained 3 new elements between FreeType 2.1.4 and 2.1.5
    So to let this compile on older versions of FreeType we'll define the
    new structure here. */
@@ -253,6 +267,9 @@ typedef struct {
     FT_Pos size, x_ppem, y_ppem;
 } My_FT_Bitmap_Size;
 
+#ifdef __i386_on_x86_64__
+#pragma clang default_addr_space(pop)
+#endif
 struct font_private_data
 {
     FT_Face ft_face;
@@ -272,7 +289,7 @@ struct font_mapping
     int         refcount;
     dev_t       dev;
     ino_t       ino;
-    void       *data;
+    void* HOSTPTR data;
     size_t      size;
 };
 
@@ -386,6 +403,10 @@ static char **expand_mac_font(const char *path)
         unsigned int size, max_size;
     } ret;
 
+    /* CrossOver HACK #15526.  High Sierra can block when using the FSRef api, so ignore
+       suitcase fonts. */
+    return NULL;
+
     TRACE("path %s\n", path);
 
     s = FSPathMakeRef((unsigned char*)path, &ref, FALSE);
@@ -430,8 +451,8 @@ static char **expand_mac_font(const char *path)
     while(1)
     {
         FamRec *fam_rec;
-        unsigned short *num_faces_ptr, num_faces, face;
-        AsscEntry *assoc;
+        unsigned short * HOSTPTR num_faces_ptr, num_faces, face;
+        AsscEntry * HOSTPTR assoc;
         Handle fond;
         ResType fond_res = FT_MAKE_TAG('F','O','N','D');
 
@@ -440,11 +461,11 @@ static char **expand_mac_font(const char *path)
         TRACE("got fond resource %d\n", idx);
         HLock(fond);
 
-        fam_rec = *(FamRec**)fond;
-        num_faces_ptr = (unsigned short *)(fam_rec + 1);
+        fam_rec = *(FamRec** HOSTPTR)fond;
+        num_faces_ptr = (unsigned short * HOSTPTR)(fam_rec + 1);
         num_faces = GET_BE_WORD(*num_faces_ptr);
         num_faces++;
-        assoc = (AsscEntry*)(num_faces_ptr + 1);
+        assoc = (AsscEntry * HOSTPTR)(num_faces_ptr + 1);
         TRACE("num faces %04x\n", num_faces);
         for(face = 0; face < num_faces; face++, assoc++)
         {
@@ -481,11 +502,8 @@ static char **expand_mac_font(const char *path)
                 {
                     if(fd != -1)
                     {
-                        unsigned char *sfnt_data;
-
                         HLock(sfnt);
-                        sfnt_data = *(unsigned char**)sfnt;
-                        write(fd, sfnt_data, GetHandleSize(sfnt));
+                        write(fd, *sfnt, GetHandleSize(sfnt));
                         HUnlock(sfnt);
                         close(fd);
                     }
@@ -581,11 +599,14 @@ static LPWSTR strdupW(LPCWSTR p)
     return ret;
 }
 
-static WCHAR *towstr(const char *str)
+static WCHAR *towstr(const char * HOSTPTR str)
 {
     DWORD len = strlen(str) + 1;
     WCHAR *wstr = RtlAllocateHeap( GetProcessHeap(), 0, len * sizeof(WCHAR) );
-    RtlMultiByteToUnicodeN( wstr, len * sizeof(WCHAR), &len, str, len );
+    char *copy = RtlAllocateHeap( GetProcessHeap(), 0, len );
+    memcpy( copy, str, len );
+    RtlMultiByteToUnicodeN( wstr, len * sizeof(WCHAR), &len, copy, len );
+    RtlFreeHeap( GetProcessHeap(), 0, copy );
     return wstr;
 }
 
@@ -797,8 +818,11 @@ static WCHAR *copy_name_table_string( const FT_SfntName *name )
     case TT_PLATFORM_MACINTOSH:
         if (!(cp = get_mac_code_page( name ))) return NULL;
         ret = RtlAllocateHeap( GetProcessHeap(), 0, (name->string_len + 1) * sizeof(WCHAR) );
+        char *copy = RtlAllocateHeap( GetProcessHeap(), 0, name->string_len + 1);
+        memcpy( copy, name->string, name->string_len + 1 );
         RtlCustomCPToUnicodeN( cp, ret, name->string_len * sizeof(WCHAR), &i,
-                               (char *)name->string, name->string_len );
+                               copy, name->string_len );
+        RtlFreeHeap( GetProcessHeap(), 0, copy );
         ret[i / sizeof(WCHAR)] = 0;
         return ret;
     }
@@ -1016,7 +1040,7 @@ static inline void get_fontsig( FT_Face ft_face, FONTSIGNATURE *fs )
     }
 }
 
-static FT_Face new_ft_face( const char *file, void *font_data_ptr, DWORD font_data_size,
+static FT_Face new_ft_face( const char *file, void * HOSTPTR font_data_ptr, DWORD font_data_size,
                             FT_Long face_index, BOOL allow_bitmap )
 {
     FT_Error err;
@@ -1153,14 +1177,23 @@ static WCHAR *decode_opentype_name( struct opentype_name *name )
     if (!name->codepage)
     {
         len = min( ARRAY_SIZE(buffer), name->length / sizeof(WCHAR) );
-        while (len--) buffer[len] = GET_BE_WORD( ((WORD *)name->bytes)[len] );
+        while (len--) buffer[len] = GET_BE_WORD( ((WORD * HOSTPTR)name->bytes)[len] );
         len = min( ARRAY_SIZE(buffer), name->length / sizeof(WCHAR) );
     }
     else
     {
         NtGetNlsSectionPtr( 11, name->codepage, NULL, (void **)&codepage_ptr, &codepage_size );
         RtlInitCodePageTable( codepage_ptr, &codepage_info );
+#ifdef __i386_on_x86_64__
+        {
+            char *copy = RtlAllocateHeap( GetProcessHeap(), 0, name->length );
+            memcpy( copy, name->bytes, name->length );
+            RtlCustomCPToUnicodeN( &codepage_info, buffer, sizeof(buffer), &len, copy, name->length );
+            RtlFreeHeap( GetProcessHeap(), 0, copy );
+        }
+#else
         RtlCustomCPToUnicodeN( &codepage_info, buffer, sizeof(buffer), &len, name->bytes, name->length );
+#endif
         len /= sizeof(WCHAR);
         NtUnmapViewOfSection( GetCurrentProcess(), codepage_ptr );
     }
@@ -1187,13 +1220,13 @@ struct unix_face
     struct bitmap_font_size size;
 };
 
-static struct unix_face *unix_face_create( const char *unix_name, void *data_ptr, DWORD data_size,
+static struct unix_face *unix_face_create( const char *unix_name, void * HOSTPTR data_ptr, DWORD data_size,
                                            UINT face_index, DWORD flags )
 {
     static const WCHAR space_w[] = {' ',0};
 
-    const struct ttc_sfnt_v1 *ttc_sfnt_v1;
-    const struct tt_name_v0 *tt_name_v0;
+    const struct ttc_sfnt_v1 * HOSTPTR ttc_sfnt_v1;
+    const struct tt_name_v0 * HOSTPTR tt_name_v0;
     struct unix_face *This;
     struct stat st;
     DWORD face_count;
@@ -1243,7 +1276,7 @@ static struct unix_face *unix_face_create( const char *unix_name, void *data_ptr
         This->style_name = decode_opentype_name( &style_name.face_name );
 
         memset( &full_name, 0, sizeof(full_name) );
-        style_name.primary_langid = primary_langid;
+        full_name.primary_langid = primary_langid;
         opentype_enum_full_names( tt_name_v0, search_face_name_callback, &full_name );
         This->full_name = decode_opentype_name( &full_name.face_name );
 
@@ -1298,6 +1331,31 @@ static struct unix_face *unix_face_create( const char *unix_name, void *data_ptr
     {
         RtlFreeHeap( GetProcessHeap(), 0, This );
         This = NULL;
+    }
+
+    /* CROSSOVER HACK - bug 4862 */
+    {
+        static const WCHAR zenkaiW[] = {'A','R',' ','P','L',' ','Z','e','n','K','a','i',' ','U','n','i',0};
+        static const WCHAR samyakW[] = {'S','a','m','y','a','k',' ','O','r','i','y','a',0};
+        static const WCHAR symbolW[] = {'s','y','m','b','o','l',0};
+        if (This && (!strcmpW(This->family_name, zenkaiW) || !strcmpW(This->family_name, samyakW)))
+        {
+            /* These fonts (ukai.ttf, samyak-oriya.ttf) cause native gdiplus to crash */
+            TRACE("Skipping %s\n", debugstr_w(This->family_name));
+            RtlFreeHeap( GetProcessHeap(), 0, This );
+            This = NULL;
+        }
+        /* Ignore Apple's Symbol font */
+        if (This && !strcmpiW( This->family_name, symbolW ) && This->scalable)
+        {
+            if(!(This->fs.fsCsb[0] & 0x80000000))
+            {
+                TRACE( "Skipping Apple's Symbol font\n" );
+                RtlFreeHeap( GetProcessHeap(), 0, This );
+                This = NULL;
+                goto done;
+            }
+        }
     }
 
 done:
@@ -1601,7 +1659,7 @@ static void fontconfig_add_font( FcPattern *pattern, DWORD flags )
 
 static void init_fontconfig(void)
 {
-    void *fc_handle = dlopen(SONAME_LIBFONTCONFIG, RTLD_NOW);
+    void * HOSTPTR fc_handle = dlopen(SONAME_LIBFONTCONFIG, RTLD_NOW);
 
     if (!fc_handle)
     {
@@ -1712,6 +1770,7 @@ static void load_fontconfig_fonts( void )
     FcConfig *config;
 
     if (!fontconfig_enabled) return;
+    if (getenv("CX_SKIP_FONTCONFIG_FONTS")) return;
     if (!(config = pFcConfigGetCurrent())) goto done;
     if (!(done_set = pFcStrSetCreate())) goto done;
     if (!(dir_list = pFcConfigGetFontDirs( config ))) goto done;
@@ -1725,11 +1784,15 @@ done:
 
 #elif defined(HAVE_CARBON_CARBON_H)
 
+#ifdef __i386_on_x86_64__
+#pragma clang default_addr_space(push, default)
+#endif
+
 static void load_mac_font_callback(const void *value, void *context)
 {
     CFStringRef pathStr = value;
     CFIndex len;
-    char* path;
+    char* WIN32PTR path;
 
     len = CFStringGetMaximumSizeOfFileSystemRepresentation(pathStr);
     path = RtlAllocateHeap(GetProcessHeap(), 0, len);
@@ -1845,12 +1908,25 @@ static void load_mac_fonts(void)
     CFRelease(paths);
 }
 
+#ifdef __i386_on_x86_64__
+#pragma clang default_addr_space(pop)
+#endif
+
 #endif
 
 
 static BOOL init_freetype(void)
 {
-    ft_handle = dlopen(SONAME_LIBFREETYPE, RTLD_NOW);
+    const char *ftname = "libcxfreetype.so";
+
+    TRACE("Trying freetype library %s (hard-coded)\n",ftname);
+    ft_handle = dlopen(ftname, RTLD_NOW);
+
+    if(!ft_handle) {
+        TRACE("Can't find freetype library %s, trying %s instead\n", ftname, SONAME_LIBFREETYPE);
+        ft_handle = dlopen(SONAME_LIBFREETYPE, RTLD_NOW);
+    }
+
     if(!ft_handle) {
         WINE_MESSAGE(
       "Wine cannot find the FreeType font library.  To enable Wine to\n"
@@ -1943,7 +2019,15 @@ static void CDECL freetype_load_fonts(void)
 #elif defined(HAVE_CARBON_CARBON_H)
     load_mac_fonts();
 #elif defined(__ANDROID__)
-    ReadFontDir("/system/fonts", TRUE);
+    {
+        static const WCHAR fontssystemdirW[] = {'c',':','\\','f','o','n','t','s','\\','s','y','s','t','e','m',0};
+        char *unixname = wine_get_unix_file_name(fontssystemdirW);
+        if (unixname)
+        {
+            ReadFontDir(unixname, TRUE);
+            HeapFree(GetProcessHeap(), 0, unixname);
+        }
+    }
 #endif
 }
 
@@ -2442,7 +2526,7 @@ static BOOL CDECL freetype_load_font( struct gdi_font *font )
     struct font_private_data *data;
     INT width = 0, height;
     FT_Face ft_face;
-    void *data_ptr;
+    void * HOSTPTR data_ptr;
     SIZE_T data_size;
 
     if (!(data = RtlAllocateHeap( GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(*data) ))) return FALSE;
@@ -2980,7 +3064,7 @@ static DWORD get_mono_glyph_bitmap( FT_GlyphSlot glyph, FT_BBox bbox,
     DWORD pitch  = ((width + 31) >> 5) << 2;
     DWORD needed = pitch * height;
     FT_Bitmap ft_bitmap;
-    BYTE *src, *dst;
+    BYTE * HOSTPTR src, *dst;
     INT w, h, x;
 
     if (!buf || !buflen) return needed;
@@ -3047,7 +3131,7 @@ static DWORD get_antialias_glyph_bitmap( FT_GlyphSlot glyph, FT_BBox bbox, UINT 
     DWORD needed = pitch * height;
     FT_Bitmap ft_bitmap;
     INT w, h, x, max_level;
-    BYTE *src, *dst;
+    BYTE * HOSTPTR src, *dst;
 
     if (!buf || !buflen) return needed;
     if (!needed) return GDI_ERROR;  /* empty glyph */
@@ -3122,7 +3206,7 @@ static DWORD get_subpixel_glyph_bitmap( FT_GlyphSlot glyph, FT_BBox bbox, UINT f
     DWORD width  = (bbox.xMax - bbox.xMin ) >> 6;
     DWORD height = (bbox.yMax - bbox.yMin ) >> 6;
     DWORD pitch, needed = 0;
-    BYTE *src, *dst;
+    BYTE * HOSTPTR src, *dst;
     INT  w, h, x;
 
     switch (glyph->format)
@@ -3577,6 +3661,37 @@ static DWORD CDECL freetype_get_glyph_outline( struct gdi_font *font, UINT glyph
     case GGO_GRAY4_BITMAP:
     case GGO_GRAY8_BITMAP:
     case WINE_GGO_GRAY16_BITMAP:
+
+        /****************** CodeWeavers hack to fix HL2 crash **************************
+         *
+         * Both glyphs 0x2e and 0x39 of this font get rendered to a larger
+         * size with FreeType than under Windows, and HL2 uses a fixed size
+         * buffer on the stack to copy the data into.  For now we'll clip glyphs
+         * from that font into a rather smaller BBox
+         *
+         ******************************************************************************/
+        if(!strcmp(ft_face->family_name, "HL2MP") ||
+           !strcmp(ft_face->family_name, "csd"))
+        {
+            int i;
+            DWORD width  = (bbox.xMax - bbox.xMin ) >> 6;
+            DWORD height = (bbox.yMax - bbox.yMin ) >> 6;
+
+            if(width) width--;
+
+            for(i = 0; i < 2; i++)
+            {
+                if(height)
+                {
+                    height--;
+                    lpgm->gmptGlyphOrigin.y--;
+                }
+            }
+            lpgm->gmBlackBoxX = width  ? width  : 1;
+            lpgm->gmBlackBoxY = height ? height : 1;
+        }
+        /*********************************** End CW's hack ****************************/
+
         return get_antialias_glyph_bitmap( ft_face->glyph, bbox, format, font->fake_bold,
                                            needsTransform, matrices, buflen, buf );
 

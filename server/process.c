@@ -49,6 +49,7 @@
 #include "request.h"
 #include "user.h"
 #include "security.h"
+#include "esync.h"
 
 /* process structure */
 
@@ -68,6 +69,7 @@ static struct security_descriptor *process_get_sd( struct object *obj );
 static void process_poll_event( struct fd *fd, int event );
 static struct list *process_get_kernel_obj_list( struct object *obj );
 static void process_destroy( struct object *obj );
+static struct esync_fd *process_get_esync_fd( struct object *obj, enum esync_type *type );
 static void terminate_process( struct process *process, struct thread *skip, int exit_code );
 
 static const struct object_ops process_ops =
@@ -78,6 +80,7 @@ static const struct object_ops process_ops =
     add_queue,                   /* add_queue */
     remove_queue,                /* remove_queue */
     process_signaled,            /* signaled */
+    process_get_esync_fd,        /* get_esync_fd */
     no_satisfied,                /* satisfied */
     no_signal,                   /* signal */
     no_get_fd,                   /* get_fd */
@@ -129,6 +132,7 @@ static const struct object_ops startup_info_ops =
     add_queue,                     /* add_queue */
     remove_queue,                  /* remove_queue */
     startup_info_signaled,         /* signaled */
+    NULL,                          /* get_esync_fd */
     no_satisfied,                  /* satisfied */
     no_signal,                     /* signal */
     no_get_fd,                     /* get_fd */
@@ -175,6 +179,7 @@ static const struct object_ops job_ops =
     add_queue,                     /* add_queue */
     remove_queue,                  /* remove_queue */
     job_signaled,                  /* signaled */
+    NULL,                          /* get_esync_fd */
     no_satisfied,                  /* satisfied */
     no_signal,                     /* signal */
     no_get_fd,                     /* get_fd */
@@ -345,6 +350,161 @@ static unsigned int num_free_ptids;         /* number of free ptids */
 static void kill_all_processes(void);
 
 #define PTID_OFFSET 8  /* offset for first ptid value */
+
+/* crossover usage logging support */
+
+#include <sys/types.h>
+#include <sys/stat.h>
+#include "wine/unicode.h"
+
+/* get the next char value taking surrogates into account */
+static inline unsigned int get_surrogate_value( const WCHAR *src, unsigned int srclen )
+{
+    if (src[0] >= 0xd800 && src[0] <= 0xdfff)  /* surrogate pair */
+    {
+        if (src[0] > 0xdbff || /* invalid high surrogate */
+            srclen <= 1 ||     /* missing low surrogate */
+            src[1] < 0xdc00 || src[1] > 0xdfff) /* invalid low surrogate */
+            return 0;
+        return 0x10000 + ((src[0] & 0x3ff) << 10) + (src[1] & 0x3ff);
+    }
+    return src[0];
+}
+
+/* query necessary dst length for src string */
+static inline int get_length_utf8( const WCHAR *src, unsigned int srclen )
+{
+    int len;
+    unsigned int val;
+
+    for (len = 0; srclen; srclen--, src++)
+    {
+        if (*src < 0x80)  /* 0x00-0x7f: 1 byte */
+        {
+            len++;
+            continue;
+        }
+        if (*src < 0x800)  /* 0x80-0x7ff: 2 bytes */
+        {
+            len += 2;
+            continue;
+        }
+        if (!(val = get_surrogate_value( src, srclen ))) continue;
+        if (val < 0x10000)  /* 0x800-0xffff: 3 bytes */
+            len += 3;
+        else   /* 0x10000-0x10ffff: 4 bytes */
+        {
+            len += 4;
+            src++;
+            srclen--;
+        }
+    }
+    return len;
+}
+
+/* wide char to UTF-8 string conversion */
+/* return -1 on dst buffer overflow, -2 on invalid input char */
+static int utf8_wcstombs( const WCHAR *src, int srclen, char *dst, int dstlen )
+{
+    int len;
+
+    for (len = dstlen; srclen; srclen--, src++)
+    {
+        WCHAR ch = *src;
+        unsigned int val;
+
+        if (ch < 0x80)  /* 0x00-0x7f: 1 byte */
+        {
+            *dst++ = ch;
+            continue;
+        }
+        if (ch < 0x800)  /* 0x80-0x7ff: 2 bytes */
+        {
+            dst[1] = 0x80 | (ch & 0x3f);
+            ch >>= 6;
+            dst[0] = 0xc0 | ch;
+            dst += 2;
+            continue;
+        }
+        if (!(val = get_surrogate_value( src, srclen ))) continue;
+        if (val < 0x10000)  /* 0x800-0xffff: 3 bytes */
+        {
+            dst[2] = 0x80 | (val & 0x3f);
+            val >>= 6;
+            dst[1] = 0x80 | (val & 0x3f);
+            val >>= 6;
+            dst[0] = 0xe0 | val;
+            dst += 3;
+        }
+        else   /* 0x10000-0x10ffff: 4 bytes */
+        {
+            dst[3] = 0x80 | (val & 0x3f);
+            val >>= 6;
+            dst[2] = 0x80 | (val & 0x3f);
+            val >>= 6;
+            dst[1] = 0x80 | (val & 0x3f);
+            val >>= 6;
+            dst[0] = 0xf0 | val;
+            dst += 4;
+            src++;
+            srclen--;
+        }
+    }
+    return dstlen - len;
+}
+
+static void log_process_event( struct process *process, const char *fmt, ... )
+{
+    static unsigned int bottle_inode = 0;
+    const char *name = getenv( "CX_WINE_USAGE_LOGFILE" );
+    const char *appid = getenv( "CX_BOTTLE_CREATOR_APPID" );
+    struct process_dll *exe;
+    char *ptr, *buffer, prefix[128], bottleid[12];
+    int fd, len1, len2, len3, len4;
+    va_list args;
+
+    appid = appid ? appid : "--unknown--";
+
+    if (!name || name[0] != '/') return;  /* needs to be an absolute path */
+
+    if ((fd = open( name, O_WRONLY | O_APPEND | O_CREAT, 0600 )) == -1) return;
+
+    if (!list_head( &process->dlls )) goto done;
+    exe = LIST_ENTRY( list_head( &process->dlls ), struct process_dll, entry );
+
+    if (!bottle_inode)
+    {
+        struct stat st;
+        if (!fstat( config_dir_fd, &st ))
+            bottle_inode = st.st_ino;
+    }
+
+    va_start( args, fmt );
+    len1 = vsnprintf( prefix, sizeof(prefix), fmt, args );
+    va_end( args );
+    len2 = snprintf( bottleid, sizeof(bottleid), "%u ", bottle_inode );
+    len3 = get_length_utf8( exe->filename, exe->namelen/sizeof(WCHAR) );
+    len4 = strlen( appid );
+
+    if (len1 < 0 || len1 >= sizeof(prefix) ||
+        len2 < 0 || len2 >= sizeof(bottleid) ||
+        len3 < 0)
+        goto done;
+    if (!(buffer = ptr = malloc( len1 + len2 + len3 + len4 + 3 ))) goto done;
+    memcpy( ptr, prefix, len1 );
+    ptr += len1;
+    memcpy( ptr, bottleid, len2 );
+    ptr += len2;
+    ptr += utf8_wcstombs( exe->filename, exe->namelen/sizeof(WCHAR), ptr, len3 );
+    *ptr++ = ' ';
+    memcpy( ptr, appid, len4 );
+    ptr += len4;
+    *ptr++ = '\n';
+    write( fd, buffer, ptr - buffer );
+    free( buffer );
+done:
+    close( fd );
+}
 
 static unsigned int index_from_ptid(unsigned int id) { return id / 4; }
 static unsigned int ptid_from_index(unsigned int index) { return index * 4; }
@@ -542,17 +702,18 @@ struct process *create_process( int fd, struct process *parent, int inherit_all,
     process->trace_data      = 0;
     process->rawinput_mouse  = NULL;
     process->rawinput_kbd    = NULL;
+    process->esync_fd        = NULL;
     list_init( &process->kernel_object );
     list_init( &process->thread_list );
     list_init( &process->locks );
     list_init( &process->asyncs );
     list_init( &process->classes );
+    list_init( &process->surfaces );
     list_init( &process->views );
     list_init( &process->dlls );
     list_init( &process->rawinput_devices );
 
     process->end_time = 0;
-    list_add_tail( &process_list, &process->entry );
 
     if (sd && !default_set_sd( &process->obj, sd, OWNER_SECURITY_INFORMATION | GROUP_SECURITY_INFORMATION |
                                DACL_SECURITY_INFORMATION | SACL_SECURITY_INFORMATION ))
@@ -598,6 +759,9 @@ struct process *create_process( int fd, struct process *parent, int inherit_all,
     if (!token_assign_label( process->token, security_high_label_sid ))
         goto error;
 
+    if (do_esync())
+        process->esync_fd = esync_create_fd( 0, 0 );
+
     set_fd_events( process->msg_fd, POLLIN );  /* start listening to events */
     return process;
 
@@ -640,12 +804,12 @@ static void process_destroy( struct object *obj )
     }
     if (process->console) release_object( process->console );
     if (process->msg_fd) release_object( process->msg_fd );
-    list_remove( &process->entry );
     if (process->idle_event) release_object( process->idle_event );
     if (process->exe_file) release_object( process->exe_file );
     if (process->id) free_ptid( process->id );
     if (process->token) release_object( process->token );
     free( process->dir_cache );
+    if (do_esync()) esync_close_fd( process->esync_fd );
 }
 
 /* dump a process on stdout for debugging purposes */
@@ -668,6 +832,13 @@ static int process_signaled( struct object *obj, struct wait_queue_entry *entry 
 {
     struct process *process = (struct process *)obj;
     return !process->running_threads;
+}
+
+static struct esync_fd *process_get_esync_fd( struct object *obj, enum esync_type *type )
+{
+    struct process *process = (struct process *)obj;
+    *type = ESYNC_MANUAL_SERVER;
+    return process->esync_fd;
 }
 
 static unsigned int process_map_access( struct object *obj, unsigned int access )
@@ -867,15 +1038,11 @@ restart:
 /* kill all processes */
 static void kill_all_processes(void)
 {
-    for (;;)
-    {
-        struct process *process;
+    struct list *ptr;
 
-        LIST_FOR_EACH_ENTRY( process, &process_list, struct process, entry )
-        {
-            if (process->running_threads) break;
-        }
-        if (&process->entry == &process_list) break;  /* no process found */
+    while ((ptr = list_head( &process_list )))
+    {
+        struct process *process = LIST_ENTRY( ptr, struct process, entry );
         terminate_process( process, NULL, 1 );
     }
 }
@@ -891,7 +1058,6 @@ void kill_console_processes( struct thread *renderer, int exit_code )
         LIST_FOR_EACH_ENTRY( process, &process_list, struct process, entry )
         {
             if (process == renderer->process) continue;
-            if (!process->running_threads) continue;
             if (process->console && console_get_renderer( process->console ) == renderer) break;
         }
         if (&process->entry == &process_list) break;  /* no process found */
@@ -917,6 +1083,9 @@ static void process_killed( struct process *process )
     process->exe_file = NULL;
     assert( !process->console );
 
+    if (!process->is_system)
+        log_process_event( process, "exit %x %u ", process->exit_code, (unsigned)((process->end_time-process->start_time)/TICKS_PER_SEC) );
+
     while ((ptr = list_head( &process->rawinput_devices )))
     {
         struct rawinput_device_entry *entry = LIST_ENTRY( ptr, struct rawinput_device_entry, entry );
@@ -933,6 +1102,7 @@ static void process_killed( struct process *process )
     destroy_process_classes( process );
     free_mapped_views( process );
     free_process_user_handles( process );
+    remove_process_surfaces( process );
     remove_process_locks( process );
     set_process_startup_state( process, STARTUP_ABORTED );
     finish_process_tracing( process );
@@ -947,6 +1117,7 @@ void add_process_thread( struct process *process, struct thread *thread )
     list_add_tail( &process->thread_list, &thread->proc_entry );
     if (!process->running_threads++)
     {
+        list_add_tail( &process_list, &process->entry );
         running_processes++;
         if (!process->is_system)
         {
@@ -973,6 +1144,7 @@ void remove_process_thread( struct process *process, struct thread *thread )
         /* we have removed the last running thread, exit the process */
         process->exit_code = thread->exit_code;
         generate_debug_event( thread, EXIT_PROCESS_DEBUG_EVENT, process );
+        list_remove( &process->entry );
         process_killed( process );
     }
     else generate_debug_event( thread, EXIT_THREAD_DEBUG_EVENT, thread );
@@ -1051,10 +1223,8 @@ void kill_debugged_processes( struct thread *debugger, int exit_code )
 
         /* find the first process being debugged by 'debugger' and still running */
         LIST_FOR_EACH_ENTRY( process, &process_list, struct process, entry )
-        {
-            if (!process->running_threads) continue;
             if (process->debugger == debugger) break;
-        }
+
         if (&process->entry == &process_list) break;  /* no process found */
         process->debugger = NULL;
         terminate_process( process, NULL, exit_code );

@@ -27,12 +27,14 @@
 struct _DISPATCHER_CONTEXT;
 
 /* increment this when you change the function table */
-#define NTDLL_UNIXLIB_VERSION 106
+#define NTDLL_UNIXLIB_VERSION 110
 
 struct unix_funcs
 {
     /* Nt* functions */
+#ifdef __aarch64__
     TEB *         (WINAPI *NtCurrentTeb)(void);
+#endif
 
     /* other Win32 API functions */
     NTSTATUS      (WINAPI *DbgUiIssueRemoteBreakin)( HANDLE process );
@@ -84,13 +86,14 @@ struct unix_funcs
     void          (CDECL *set_show_dot_files)( BOOL enable );
 
     /* loader functions */
-    NTSTATUS      (CDECL *load_so_dll)( UNICODE_STRING *nt_name, void **module );
+    NTSTATUS      (CDECL *load_so_dll)( UNICODE_STRING *nt_name, void **module, BOOL *is_hybrid );
     NTSTATUS      (CDECL *load_builtin_dll)( const WCHAR *name, void **module, void **unix_entry,
-                                             SECTION_IMAGE_INFORMATION *image_info );
+                                             SECTION_IMAGE_INFORMATION *image_info, BOOL *is_hybrid );
     NTSTATUS      (CDECL *unload_builtin_dll)( void *module );
     void          (CDECL *init_builtin_dll)( void *module );
     NTSTATUS      (CDECL *unwind_builtin_dll)( ULONG type, struct _DISPATCHER_CONTEXT *dispatch,
                                                CONTEXT *context );
+    void *        (CDECL *dlsym_unix_ntdll)( const char *func );
 
     /* debugging functions */
     unsigned char (CDECL *dbg_get_channel_flags)( struct __wine_debug_channel *channel );

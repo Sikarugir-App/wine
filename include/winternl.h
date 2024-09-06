@@ -21,8 +21,11 @@
 #ifndef __WINE_WINTERNL_H
 #define __WINE_WINTERNL_H
 
+#include "wine/winheader_enter.h"
+
 #include <ntdef.h>
 #include <windef.h>
+#include <wine/asm.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -1727,9 +1730,9 @@ typedef struct _SYSTEM_CPU_INFORMATION {
 #define CPU_FEATURE_SSE42         0x02000000   /* SSE42 instructions */
 #define CPU_FEATURE_AVX           0x40000000   /* AVX instructions */
 #define CPU_FEATURE_AVX2          0x80000000   /* AVX2 instructions */
-
 #define CPU_FEATURE_PAE           0x00200000
 #define CPU_FEATURE_DAZ           0x00400000
+
 #define CPU_FEATURE_ARM_VFP_32    0x00000001
 #define CPU_FEATURE_ARM_NEON      0x00000002
 #define CPU_FEATURE_ARM_V8_CRC32  0x00000004
@@ -2719,7 +2722,7 @@ typedef struct _LDR_DATA_TABLE_ENTRY
     ULONG               Flags;
     SHORT               LoadCount;
     SHORT               TlsIndex;
-    HANDLE              SectionHandle;
+    void*               SectionHandle;
     ULONG               CheckSum;
     ULONG               TimeDateStamp;
     HANDLE              ActivationContext;
@@ -3615,7 +3618,7 @@ NTSYSAPI NTSTATUS  WINAPI RtlUnicodeToUTF8N(LPSTR,DWORD,LPDWORD,LPCWSTR,DWORD);
 NTSYSAPI ULONG     WINAPI RtlUniform(PULONG);
 NTSYSAPI BOOLEAN   WINAPI RtlUnlockHeap(HANDLE);
 NTSYSAPI void      WINAPI RtlUnwind(PVOID,PVOID,PEXCEPTION_RECORD,PVOID);
-#ifdef __x86_64__
+#if defined(__x86_64__) && !defined(__i386_on_x86_64__)
 NTSYSAPI void      WINAPI RtlUnwindEx(PVOID,PVOID,PEXCEPTION_RECORD,PVOID,PCONTEXT,PUNWIND_HISTORY_TABLE);
 #elif defined(__ia64__)
 NTSYSAPI void      WINAPI RtlUnwind2(FRAME_POINTERS,PVOID,PEXCEPTION_RECORD,PVOID,PCONTEXT);
@@ -3647,7 +3650,7 @@ NTSYSAPI void      WINAPI RtlWakeConditionVariable(RTL_CONDITION_VARIABLE *);
 NTSYSAPI NTSTATUS  WINAPI RtlWalkHeap(HANDLE,PVOID);
 NTSYSAPI NTSTATUS  WINAPI RtlWow64EnableFsRedirection(BOOLEAN);
 NTSYSAPI NTSTATUS  WINAPI RtlWow64EnableFsRedirectionEx(ULONG,ULONG*);
-#ifdef __x86_64__
+#if defined(__x86_64__) && !defined(__i386_on_x86_64__)
 NTSYSAPI NTSTATUS  WINAPI RtlWow64GetThreadContext(HANDLE, WOW64_CONTEXT *);
 NTSYSAPI NTSTATUS  WINAPI RtlWow64SetThreadContext(HANDLE, const WOW64_CONTEXT *);
 #endif
@@ -3675,7 +3678,7 @@ NTSYSAPI void      WINAPI RtlSetExtendedFeaturesMask(CONTEXT_EX*,ULONG64);
 #endif
 
 #ifndef __WINE_USE_MSVCRT
-NTSYSAPI int __cdecl _strnicmp(LPCSTR,LPCSTR,size_t);
+NTSYSAPI int __cdecl _strnicmp(LPCSTR,LPCSTR,unsigned __int3264);
 #endif
 
 /* 32-bit only functions */
@@ -3784,7 +3787,7 @@ static inline USHORT RtlUshortByteSwap(USHORT s)
 }
 static inline ULONG RtlUlongByteSwap(ULONG i)
 {
-#if defined(__i386__) && defined(__GNUC__)
+#if (defined(__i386__) || defined(__i386_on_x86_64__)) && defined(__GNUC__)
     ULONG ret;
     __asm__("bswap %0" : "=r" (ret) : "0" (i) );
     return ret;
@@ -3850,5 +3853,7 @@ typedef struct
 #ifdef __cplusplus
 } /* extern "C" */
 #endif /* defined(__cplusplus) */
+
+#include "wine/winheader_exit.h"
 
 #endif  /* __WINE_WINTERNL_H */

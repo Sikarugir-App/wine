@@ -43,6 +43,7 @@
 #include <crt_externs.h>
 #define environ (*_NSGetEnviron())
 #include <CoreFoundation/CoreFoundation.h>
+
 #define LoadResource MacLoadResource
 #define GetCurrentThread MacGetCurrentThread
 #include <CoreServices/CoreServices.h>
@@ -63,7 +64,7 @@ extern char **environ;
 /* argc/argv for the Windows application */
 int __wine_main_argc = 0;
 char **__wine_main_argv = NULL;
-WCHAR **__wine_main_wargv = NULL;
+WCHAR * WIN32PTR * WIN32PTR __wine_main_wargv = NULL;
 char **__wine_main_environ = NULL;
 
 #define MAX_DLLS 100
@@ -235,11 +236,11 @@ static inline void free_dll_path( struct dll_path_context *context )
 /* adjust an array of pointers to make them into RVAs */
 static inline void fixup_rva_ptrs( void *array, BYTE *base, unsigned int count )
 {
-    void **src = (void **)array;
+    BYTE * WIN32PTR *src = (BYTE * WIN32PTR *)array;
     DWORD *dst = (DWORD *)array;
     while (count--)
     {
-        *dst++ = *src ? (BYTE *)*src - base : 0;
+        *dst++ = *src ? *src - base : 0;
         src++;
     }
 }
@@ -263,6 +264,14 @@ static inline void fixup_rva_names( UINT_PTR *ptr, int delta )
         if (!(*ptr & IMAGE_ORDINAL_FLAG)) *ptr += delta;
         ptr++;
     }
+#ifdef __i386_on_x86_64__
+    ptr++;
+    while (*ptr)
+    {
+        if (!(*ptr & IMAGE_ORDINAL_FLAG)) *ptr += delta;
+        ptr++;
+    }
+#endif
 }
 
 
@@ -289,7 +298,11 @@ static void fixup_exports( IMAGE_EXPORT_DIRECTORY *dir, BYTE *base, int delta )
     fixup_rva_dwords( &dir->AddressOfNames, delta, 1 );
     fixup_rva_dwords( &dir->AddressOfNameOrdinals, delta, 1 );
     fixup_rva_dwords( (DWORD *)(base + dir->AddressOfNames), delta, dir->NumberOfNames );
+#ifdef __i386_on_x86_64__
+    fixup_rva_ptrs( (base + dir->AddressOfFunctions), base, dir->NumberOfFunctions * 2 );
+#else
     fixup_rva_ptrs( (base + dir->AddressOfFunctions), base, dir->NumberOfFunctions );
+#endif
 }
 
 
@@ -314,13 +327,13 @@ static void fixup_resources( IMAGE_RESOURCE_DIRECTORY *dir, BYTE *root, int delt
 
 
 /* map a builtin dll in memory and fixup RVAs */
-static void *map_dll( const IMAGE_NT_HEADERS *nt_descr )
+static void * WIN32PTR map_dll( const IMAGE_NT_HEADERS *nt_descr )
 {
     IMAGE_DATA_DIRECTORY *dir;
     IMAGE_DOS_HEADER *dos;
     IMAGE_NT_HEADERS *nt;
     IMAGE_SECTION_HEADER *sec;
-    BYTE *addr;
+    BYTE * WIN32PTR addr;
     DWORD code_start, code_end, data_start, data_end;
     const size_t page_size = sysconf( _SC_PAGESIZE );
     const size_t page_mask = page_size - 1;
@@ -338,7 +351,7 @@ static void *map_dll( const IMAGE_NT_HEADERS *nt_descr )
     assert( size <= page_size );
 
     /* module address must be aligned on 64K boundary */
-    addr = (BYTE *)((nt_descr->OptionalHeader.ImageBase + 0xffff) & ~0xffff);
+    addr = (BYTE * WIN32PTR)((nt_descr->OptionalHeader.ImageBase + 0xffff) & ~0xffff);
     if (wine_anon_mmap( addr, page_size, PROT_READ|PROT_WRITE, MAP_FIXED ) != addr) return NULL;
 
     dos    = (IMAGE_DOS_HEADER *)addr;
@@ -645,9 +658,11 @@ static int check_library_arch( int fd )
     } header;
 
     if (read( fd, &header, sizeof(header) ) != sizeof(header)) return 1;
-    if (header.magic != 0xfeedface) return 1;
-    if (sizeof(void *) == sizeof(int)) return !(header.cputype >> 24);
-    else return (header.cputype >> 24) == 1; /* CPU_ARCH_ABI64 */
+    if (header.magic != 0xfeedface && header.magic != 0xfeedfacf) return 1;
+    if (sizeof(void *HOSTPTR) == sizeof(int))
+        return header.magic == 0xfeedface && (header.cputype >> 24) == 0;
+    else
+        return header.magic == 0xfeedfacf && (header.cputype >> 24) == 1; /* CPU_ARCH_ABI64 */
 #else
     struct  /* ELF header */
     {
@@ -665,7 +680,7 @@ static int check_library_arch( int fd )
 #else
     if (header.data != 1 /* ELFDATA2LSB */) return 1;
 #endif
-    if (sizeof(void *) == sizeof(int)) return header.class == 1; /* ELFCLASS32 */
+    if (sizeof(void *HOSTPTR) == sizeof(int)) return header.class == 1; /* ELFCLASS32 */
     else return header.class == 2; /* ELFCLASS64 */
 #endif
 }

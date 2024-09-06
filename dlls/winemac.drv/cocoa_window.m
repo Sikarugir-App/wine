@@ -28,6 +28,8 @@
 #import <QuartzCore/QuartzCore.h>
 #endif
 
+#include "wine/hostaddrspace_enter.h"
+
 #import "cocoa_window.h"
 
 #include "macdrv_cocoa.h"
@@ -371,10 +373,10 @@ static CVReturn WineDisplayLinkCallback(CVDisplayLinkRef displayLink, const CVTi
 @property (readwrite, getter=isFakingClose, nonatomic) BOOL fakingClose;
 @property (retain, nonatomic) NSWindow* latentParentWindow;
 
-@property (nonatomic) void* hwnd;
+@property (nonatomic) void* WIN32PTR hwnd;
 @property (retain, readwrite, nonatomic) WineEventQueue* queue;
 
-@property (nonatomic) void* surface;
+@property (nonatomic) void* WIN32PTR surface;
 @property (nonatomic) pthread_mutex_t* surface_mutex;
 
 @property (copy, nonatomic) NSBezierPath* shape;
@@ -386,7 +388,7 @@ static CVReturn WineDisplayLinkCallback(CVDisplayLinkRef displayLink, const CVTi
 @property (nonatomic) CGFloat colorKeyRed, colorKeyGreen, colorKeyBlue;
 @property (nonatomic) BOOL usePerPixelAlpha;
 
-@property (assign, nonatomic) void* imeData;
+@property (assign, nonatomic) void* WIN32PTR imeData;
 @property (nonatomic) BOOL commandDone;
 
 @property (readonly, copy, nonatomic) NSArray* childWineWindows;
@@ -685,6 +687,7 @@ static CVReturn WineDisplayLinkCallback(CVDisplayLinkRef displayLink, const CVTi
         frame.size.width *= scale;
         frame.size.height *= scale;
         [self setFrame:frame];
+        [self setWantsBestResolutionOpenGLSurface:mode];
         [self updateGLContexts];
 
         [super setRetinaMode:mode];
@@ -957,7 +960,7 @@ static CVReturn WineDisplayLinkCallback(CVDisplayLinkRef displayLink, const CVTi
 
     + (WineWindow*) createWindowWithFeatures:(const struct macdrv_window_features*)wf
                                  windowFrame:(NSRect)window_frame
-                                        hwnd:(void*)hwnd
+                                        hwnd:(void* WIN32PTR)hwnd
                                        queue:(WineEventQueue*)queue
     {
         WineWindow* window;
@@ -1839,6 +1842,10 @@ static CVReturn WineDisplayLinkCallback(CVDisplayLinkRef displayLink, const CVTi
                                          event_mask_for_type(WINDOW_MINIMIZE_REQUESTED) |
                                          event_mask_for_type(WINDOW_RESTORE_REQUESTED)
                                forWindow:self];
+
+        /* CrossOver Hack #15388 */
+        if (quicken_signin_hack && ![controller frontWineWindow])
+            [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
     }
 
     - (void) updateFullscreen
@@ -2044,8 +2051,8 @@ static CVReturn WineDisplayLinkCallback(CVDisplayLinkRef displayLink, const CVTi
         [self makeKeyWindow];
         causing_becomeKeyWindow = nil;
 
-        [queue discardEventsMatchingMask:event_mask_for_type(WINDOW_GOT_FOCUS) |
-                                         event_mask_for_type(WINDOW_LOST_FOCUS)
+        /* CrossOver Hack #18896: don't discard WINDOW_GOT_FOCUS events */
+        [queue discardEventsMatchingMask:event_mask_for_type(WINDOW_LOST_FOCUS)
                                forWindow:self];
     }
 
@@ -2269,7 +2276,7 @@ static CVReturn WineDisplayLinkCallback(CVDisplayLinkRef displayLink, const CVTi
                 return;
         }
 
-        const void* windowID = (const void*)(CGWindowID)window.windowNumber;
+        const void* windowID = (const void*)window.windowNumber;
         CFArrayRef windowIDs = CFArrayCreate(NULL, &windowID, 1, NULL);
         CGImageRef windowImage = CGWindowListCreateImageFromArray(CGRectNull, windowIDs, kCGWindowImageBoundsIgnoreFraming);
         CFRelease(windowIDs);
@@ -2339,6 +2346,7 @@ static CVReturn WineDisplayLinkCallback(CVDisplayLinkRef displayLink, const CVTi
      */
     - (BOOL) canBecomeKeyWindow
     {
+        if (quicken_signin_hack) return YES; /* CrossOver Hack #15388 */
         if (causing_becomeKeyWindow == self) return YES;
         if (self.disabled || self.noActivate) return NO;
         return [self isKeyWindow];
@@ -2405,6 +2413,8 @@ static CVReturn WineDisplayLinkCallback(CVDisplayLinkRef displayLink, const CVTi
 
         if ([menuItem action] == @selector(makeKeyAndOrderFront:))
             ret = [self isKeyWindow] || (!self.disabled && !self.noActivate);
+        else if ([menuItem action] == @selector(undo:)) // CrossOver Hack 10912: Mac Edit menu
+            ret = TRUE;
         if ([menuItem action] == @selector(toggleFullScreen:) && (self.disabled || maximized))
             ret = NO;
 
@@ -2524,6 +2534,69 @@ static CVReturn WineDisplayLinkCallback(CVDisplayLinkRef displayLink, const CVTi
 
             [super sendEvent:event];
         }
+    }
+
+    // CrossOver Hack 10912: Mac Edit menu
+    - (void) sendEditMenuCommand:(int)command
+    {
+        macdrv_event* event;
+        NSTimeInterval now = [[NSProcessInfo processInfo] systemUptime];
+
+        if (mac_edit_menu == MAC_EDIT_MENU_DISABLED) // Shouldn't get here
+        {
+            ERR(@"The Mac Edit menu is supposed to be disabled\n");
+            NSBeep();
+            return;
+        }
+
+        event = macdrv_create_event(EDIT_MENU_COMMAND, self);
+        event->edit_menu_command.command = command;
+        event->edit_menu_command.time_ms = [[WineApplicationController sharedController] ticksForEventTime:now];
+
+        [queue postEvent:event];
+
+        macdrv_release_event(event);
+
+        // This is an even grosser hack than the rest of the support for the Edit
+        // menu.  We are deliberately leaving ourselves with an incorrect notion
+        // of the current modifier key state (for the case where the user used a
+        // Command-key shortcut to invoke an Edit menu item).  Both Wine and this
+        // class pretend that Command/Alt are not pressed so that, when the user
+        // actually releases the key, it doesn't put focus on the menu bar.  If
+        // the user keeps Command pressed and types another key, we'll think that
+        // Command was newly pressed and generate the appropriate event to get
+        // everybody back in sync.
+        lastModifierFlags &= ~(NX_COMMANDMASK | NX_DEVICELCMDKEYMASK | NX_DEVICERCMDKEYMASK);
+    }
+
+    - (void) copy:(id)sender
+    {
+        [self sendEditMenuCommand:EDIT_COMMAND_COPY];
+    }
+
+    - (void) cut:(id)sender
+    {
+        [self sendEditMenuCommand:EDIT_COMMAND_CUT];
+    }
+
+    - (void) delete:(id)sender
+    {
+        [self sendEditMenuCommand:EDIT_COMMAND_DELETE];
+    }
+
+    - (void) paste:(id)sender
+    {
+        [self sendEditMenuCommand:EDIT_COMMAND_PASTE];
+    }
+
+    - (void) selectAll:(id)sender
+    {
+        [self sendEditMenuCommand:EDIT_COMMAND_SELECT_ALL];
+    }
+
+    - (void) undo:(id)sender
+    {
+        [self sendEditMenuCommand:EDIT_COMMAND_UNDO];
     }
 
     - (void) miniaturize:(id)sender
@@ -2759,6 +2832,19 @@ static CVReturn WineDisplayLinkCallback(CVDisplayLinkRef displayLink, const CVTi
 
 
     /*
+     * ---------- NSObject method overrides ----------
+     */
+    // CrossOver Hack 10912: Mac Edit menu
+    - (BOOL) respondsToSelector:(SEL)selector
+    {
+        if (mac_edit_menu == MAC_EDIT_MENU_DISABLED && [[WineApplicationController sharedController] isEditMenuAction:selector])
+             return FALSE;
+
+        return [super respondsToSelector:selector];
+    }
+
+
+    /*
      * ---------- NSWindowDelegate methods ----------
      */
     - (NSSize) window:(NSWindow*)window willUseFullScreenContentSize:(NSSize)proposedSize
@@ -2787,7 +2873,7 @@ static CVReturn WineDisplayLinkCallback(CVDisplayLinkRef displayLink, const CVTi
         if (event)
             [self flagsChanged:event];
 
-        if (causing_becomeKeyWindow == self) return;
+        /* CrossOver Hack #18896: don't return here based on causing_becomeKeyWindow */
 
         [controller windowGotFocus:self];
     }
@@ -2891,6 +2977,7 @@ static CVReturn WineDisplayLinkCallback(CVDisplayLinkRef displayLink, const CVTi
         macdrv_event* event;
 
         if (causing_becomeKeyWindow) return;
+        if ([[WineApplicationController sharedController] temporarilyIgnoreResignEventsForDialog]) return;
 
         event = macdrv_create_event(WINDOW_LOST_FOCUS, self);
         [queue postEvent:event];
@@ -3199,7 +3286,7 @@ static CVReturn WineDisplayLinkCallback(CVDisplayLinkRef displayLink, const CVTi
  * title bar, close box, etc.).
  */
 macdrv_window macdrv_create_cocoa_window(const struct macdrv_window_features* wf,
-        CGRect frame, void* hwnd, macdrv_event_queue queue)
+        CGRect frame, void* WIN32PTR hwnd, macdrv_event_queue queue)
 {
     __block WineWindow* window;
 
@@ -3238,7 +3325,7 @@ void macdrv_destroy_cocoa_window(macdrv_window w)
  *
  * Get the hwnd that was set for the window at creation.
  */
-void* macdrv_get_window_hwnd(macdrv_window w)
+void* WIN32PTR macdrv_get_window_hwnd(macdrv_window w)
 {
     WineWindow* window = (WineWindow*)w;
     return window.hwnd;
@@ -3389,7 +3476,7 @@ void macdrv_set_cocoa_parent_window(macdrv_window w, macdrv_window parent)
 /***********************************************************************
  *              macdrv_set_window_surface
  */
-void macdrv_set_window_surface(macdrv_window w, void *surface, pthread_mutex_t *mutex)
+void macdrv_set_window_surface(macdrv_window w, void * WIN32PTR surface, pthread_mutex_t *mutex)
 {
     NSAutoreleasePool* pool = [[NSAutoreleasePool alloc] init];
     WineWindow* window = (WineWindow*)w;
@@ -3575,6 +3662,7 @@ macdrv_view macdrv_create_view(CGRect rect)
         [view setAutoresizesSubviews:NO];
         [view setAutoresizingMask:NSViewNotSizable];
         [view setHidden:YES];
+        [view setWantsBestResolutionOpenGLSurface:retina_on];
         [nc addObserver:view
                selector:@selector(updateGLContexts)
                    name:NSViewGlobalFrameDidChangeNotification
@@ -3883,7 +3971,7 @@ uint32_t macdrv_window_background_color(void)
 /***********************************************************************
  *              macdrv_send_text_input_event
  */
-void macdrv_send_text_input_event(int pressed, unsigned int flags, int repeat, int keyc, void* data, int* done)
+void macdrv_send_text_input_event(int pressed, unsigned int flags, int repeat, int keyc, void* WIN32PTR data, int* done)
 {
     OnMainThreadAsync(^{
         BOOL ret;

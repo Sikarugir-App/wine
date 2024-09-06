@@ -206,6 +206,9 @@ static BOOL set_foreground_window( HWND hwnd, BOOL mouse )
         else  /* new window belongs to us */
             ret = set_active_window( hwnd, NULL, mouse, TRUE );
     }
+
+    MENU_send_window_menubar_to_macapp( hwnd );
+
     return ret;
 }
 
@@ -305,6 +308,9 @@ HWND WINAPI SetFocus( HWND hwnd )
         if (!previous) return 0;  /* nothing to do */
         if (HOOK_CallHooks( WH_CBT, HCBT_SETFOCUS, 0, (LPARAM)previous, TRUE )) return 0;
     }
+
+    /* CrossOver HACK for bug 6727 */
+    MENU_send_window_menubar_to_macapp( hwnd );
 
     /* change focus and send messages */
     return set_focus_window( hwnd );

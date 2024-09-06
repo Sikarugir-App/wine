@@ -21,18 +21,25 @@
 #define __WINE_VULKAN_PRIVATE_H
 
 /* Perform vulkan struct conversion on 32-bit x86 platforms. */
-#if defined(__i386__)
+#if defined(__i386__) || defined(__i386_on_x86_64__)
 #define USE_STRUCT_CONVERSION
 #endif
 
 #include "wine/debug.h"
 #include "wine/heap.h"
+#define WINE_LIST_HOSTADDRSPACE
 #include "wine/list.h"
 #define VK_NO_PROTOTYPES
+/* 32on64 FIXME: made WINE_VK_HOST 32on64-only to fix 32-bit crashes on Linux. */
+#ifdef __i386_on_x86_64__
+#define WINE_VK_HOST
+#endif
 #include "wine/vulkan.h"
 #include "wine/vulkan_driver.h"
 
 #include "vulkan_thunks.h"
+
+#include "wine/hostptraddrspace_enter.h"
 
 /* Magic value defined by Vulkan ICD / Loader spec */
 #define VULKAN_ICD_MAGIC_VALUE 0x01CDC0DE
@@ -44,7 +51,7 @@
 struct vulkan_func
 {
     const char *name;
-    void *func;
+    void * WIN32PTR func;
 };
 
 /* Base 'class' for our Vulkan dispatchable objects such as VkDevice and VkInstance.
@@ -87,7 +94,7 @@ struct VkDevice_T
     struct VkPhysicalDevice_T *phys_dev; /* parent */
     VkDevice device; /* native device */
 
-    struct VkQueue_T **queues;
+    struct VkQueue_T * WIN32PTR * WIN32PTR queues;
     uint32_t max_queue_families;
 
     unsigned int quirks;
@@ -118,7 +125,7 @@ struct VkInstance_T
     /* We cache devices as we need to wrap them as they are
      * dispatchable objects.
      */
-    struct VkPhysicalDevice_T **phys_devs;
+    struct VkPhysicalDevice_T * WIN32PTR * WIN32PTR phys_devs;
     uint32_t phys_dev_count;
 
     VkBool32 enable_wrapper_list;
@@ -213,13 +220,15 @@ static inline VkDebugReportCallbackEXT wine_debug_report_callback_to_handle(
     return (VkDebugReportCallbackEXT)(uintptr_t)debug_messenger;
 }
 
-void *wine_vk_get_device_proc_addr(const char *name) DECLSPEC_HIDDEN;
-void *wine_vk_get_instance_proc_addr(const char *name) DECLSPEC_HIDDEN;
+void * WIN32PTR wine_vk_get_device_proc_addr(const char *name) DECLSPEC_HIDDEN;
+void * WIN32PTR wine_vk_get_instance_proc_addr(const char *name) DECLSPEC_HIDDEN;
 
 BOOL wine_vk_device_extension_supported(const char *name) DECLSPEC_HIDDEN;
 BOOL wine_vk_instance_extension_supported(const char *name) DECLSPEC_HIDDEN;
 
 BOOL wine_vk_is_type_wrapped(VkObjectType type) DECLSPEC_HIDDEN;
 uint64_t wine_vk_unwrap_handle(VkObjectType type, uint64_t handle) DECLSPEC_HIDDEN;
+
+#include "wine/hostptraddrspace_exit.h"
 
 #endif /* __WINE_VULKAN_PRIVATE_H */

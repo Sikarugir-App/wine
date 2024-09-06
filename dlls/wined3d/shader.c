@@ -1649,23 +1649,28 @@ static HRESULT shader_get_registers_used(struct wined3d_shader *shader, DWORD co
                     || (ins.handler_idx == WINED3DSIH_LD_RAW && ins.src[1].reg.type == WINED3DSPR_UAV)
                     || (ins.handler_idx == WINED3DSIH_LD_STRUCTURED && ins.src[2].reg.type == WINED3DSPR_UAV))
             {
-                unsigned int reg_idx;
+                const struct wined3d_shader_register *reg;
+
                 if (ins.handler_idx == WINED3DSIH_LD_UAV_TYPED || ins.handler_idx == WINED3DSIH_LD_RAW)
-                    reg_idx = ins.src[1].reg.idx[0].offset;
+                    reg = &ins.src[1].reg;
                 else if (ins.handler_idx == WINED3DSIH_LD_STRUCTURED)
-                    reg_idx = ins.src[2].reg.idx[0].offset;
+                    reg = &ins.src[2].reg;
                 else if (WINED3DSIH_ATOMIC_AND <= ins.handler_idx && ins.handler_idx <= WINED3DSIH_ATOMIC_XOR)
-                    reg_idx = ins.dst[0].reg.idx[0].offset;
+                    reg = &ins.dst[0].reg;
                 else if (ins.handler_idx == WINED3DSIH_BUFINFO)
-                    reg_idx = ins.src[0].reg.idx[0].offset;
+                    reg = &ins.src[0].reg;
                 else
-                    reg_idx = ins.dst[1].reg.idx[0].offset;
-                if (reg_idx >= MAX_UNORDERED_ACCESS_VIEWS)
+                    reg = &ins.dst[1].reg;
+
+                if (reg->type == WINED3DSPR_UAV)
                 {
-                    ERR("Invalid UAV index %u.\n", reg_idx);
-                    break;
+                    if (reg->idx[0].offset >= MAX_UNORDERED_ACCESS_VIEWS)
+                    {
+                        ERR("Invalid UAV index %u.\n", reg->idx[0].offset);
+                        break;
+                    }
+                    reg_maps->uav_read_mask |= (1u << reg->idx[0].offset);
                 }
-                reg_maps->uav_read_mask |= (1u << reg_idx);
             }
             else if (ins.handler_idx == WINED3DSIH_NRM)
             {
@@ -1874,8 +1879,12 @@ static void shader_cleanup_reg_maps(struct wined3d_shader_reg_maps *reg_maps)
 unsigned int shader_find_free_input_register(const struct wined3d_shader_reg_maps *reg_maps, unsigned int max)
 {
     DWORD map = 1u << max;
+
     map |= map - 1;
     map &= reg_maps->shader_version.major < 3 ? ~reg_maps->texcoord : ~reg_maps->input_registers;
+
+    if (!map)
+      return ~0u;
 
     return wined3d_log2i(map);
 }
@@ -1910,6 +1919,11 @@ static void shader_dump_global_flags(struct wined3d_string_buffer *buffer, DWORD
 
 static void shader_dump_sync_flags(struct wined3d_string_buffer *buffer, DWORD sync_flags)
 {
+    if (sync_flags & WINED3DSSF_GLOBAL_UAV)
+    {
+        shader_addline(buffer, "_uglobal");
+        sync_flags &= ~WINED3DSSF_GLOBAL_UAV;
+    }
     if (sync_flags & WINED3DSSF_GROUP_SHARED_MEMORY)
     {
         shader_addline(buffer, "_g");
@@ -3399,6 +3413,8 @@ static void wined3d_shader_init_object(void *object)
     struct wined3d_shader *shader = object;
     struct wined3d_device *device = shader->device;
 
+    TRACE("shader %p.\n", shader);
+
     list_add_head(&device->shaders, &shader->shader_list_entry);
 
     device->shader_backend->shader_precompile(device->shader_priv, shader);
@@ -3406,6 +3422,8 @@ static void wined3d_shader_init_object(void *object)
 
 static void wined3d_shader_destroy_object(void *object)
 {
+    TRACE("object %p.\n", object);
+
     shader_cleanup(object);
     heap_free(object);
 }
@@ -3537,6 +3555,8 @@ void find_vs_compile_args(const struct wined3d_state *state, const struct wined3
     else
         args->flatshading = 0;
 
+    args->emulated_clipplanes = find_emulated_clipplanes(context, state);
+
     init_interpolation_compile_args(args->interpolation_mode,
             args->next_shader_type == WINED3D_SHADER_TYPE_PIXEL ? pixel_shader : NULL, d3d_info);
 }
@@ -3598,7 +3618,7 @@ static HRESULT shader_init(struct wined3d_shader *shader, struct wined3d_device 
     list_init(&shader->reg_maps.indexable_temps);
     list_init(&shader->shader_list_entry);
 
-    if (desc->byte_code_size == ~(size_t)0)
+    if (desc->byte_code_size == ~(SIZE_T)0)
     {
         struct wined3d_shader_version shader_version;
         const struct wined3d_shader_frontend *fe;
@@ -4154,6 +4174,16 @@ void find_ps_compile_args(const struct wined3d_state *state, const struct wined3
         {
             args->fog = WINED3D_FFP_PS_FOG_OFF;
         }
+    }
+    /* Only inser the KIL fragment.texcoord[clip] line if clipping is used.
+     * It is expensive because KIL can break early Z discard. Its cheaper to
+     * have two shaders than KIL needlessly. The same applies to the
+     * clipplane emulation in GLSL with discard. */
+    if (!shader->device->adapter->d3d_info.vs_clipping && use_vs(state)
+            && state->render_states[WINED3D_RS_CLIPPING]
+            && state->render_states[WINED3D_RS_CLIPPLANEENABLE])
+    {
+        args->clip = TRUE;
     }
 
     if (!d3d_info->full_ffp_varyings)

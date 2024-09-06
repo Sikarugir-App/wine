@@ -34,6 +34,7 @@
 #define WIN32_NO_STATUS
 #include "winternl.h"
 #include "wine/debug.h"
+#include "wine/server.h"
 #include "wine/unicode.h"
 #include "x11drv.h"
 
@@ -46,8 +47,6 @@ DEFINE_DEVPROPKEY(DEVPROPKEY_MONITOR_OUTPUT_ID, 0xca085853, 0x16ce, 0x48aa, 0xb1
 /* Wine specific properties */
 DEFINE_DEVPROPKEY(WINE_DEVPROPKEY_GPU_VULKAN_UUID, 0x233a9ef3, 0xafc4, 0x4abd, 0xb5, 0x64, 0xc3, 0x2f, 0x21, 0xf1, 0x53, 0x5c, 2);
 DEFINE_DEVPROPKEY(WINE_DEVPROPKEY_MONITOR_STATEFLAGS, 0x233a9ef3, 0xafc4, 0x4abd, 0xb5, 0x64, 0xc3, 0x2f, 0x21, 0xf1, 0x53, 0x5b, 2);
-DEFINE_DEVPROPKEY(WINE_DEVPROPKEY_MONITOR_RCMONITOR, 0x233a9ef3, 0xafc4, 0x4abd, 0xb5, 0x64, 0xc3, 0x2f, 0x21, 0xf1, 0x53, 0x5b, 3);
-DEFINE_DEVPROPKEY(WINE_DEVPROPKEY_MONITOR_RCWORK, 0x233a9ef3, 0xafc4, 0x4abd, 0xb5, 0x64, 0xc3, 0x2f, 0x21, 0xf1, 0x53, 0x5b, 4);
 DEFINE_DEVPROPKEY(WINE_DEVPROPKEY_MONITOR_ADAPTERNAME, 0x233a9ef3, 0xafc4, 0x4abd, 0xb5, 0x64, 0xc3, 0x2f, 0x21, 0xf1, 0x53, 0x5b, 5);
 
 static const WCHAR driver_date_dataW[] = {'D','r','i','v','e','r','D','a','t','e','D','a','t','a',0};
@@ -146,14 +145,11 @@ void release_display_device_init_mutex(HANDLE mutex)
 static BOOL update_screen_cache(void)
 {
     RECT virtual_rect = {0}, primary_rect = {0}, monitor_rect;
-    SP_DEVINFO_DATA device_data = {sizeof(device_data)};
-    HDEVINFO devinfo = INVALID_HANDLE_VALUE;
     FILETIME filetime = {0};
     HANDLE mutex = NULL;
+    NTSTATUS status;
     DWORD i = 0;
     INT result;
-    DWORD type;
-    BOOL ret = FALSE;
 
     EnterCriticalSection(&screen_section);
     if ((!video_key && RegOpenKeyW(HKEY_LOCAL_MACHINE, video_keyW, &video_key))
@@ -169,15 +165,21 @@ static BOOL update_screen_cache(void)
 
     mutex = get_display_device_init_mutex();
 
-    devinfo = SetupDiGetClassDevsW(&GUID_DEVCLASS_MONITOR, displayW, NULL, DIGCF_PRESENT);
-    if (devinfo == INVALID_HANDLE_VALUE)
-        goto fail;
-
-    while (SetupDiEnumDeviceInfo(devinfo, i++, &device_data))
+    while (TRUE)
     {
-        if (!SetupDiGetDevicePropertyW(devinfo, &device_data, &WINE_DEVPROPKEY_MONITOR_RCMONITOR, &type,
-                                       (BYTE *)&monitor_rect, sizeof(monitor_rect), NULL, 0))
-            goto fail;
+        SERVER_START_REQ(enum_monitor)
+        {
+            req->index = i++;
+            if (!(status = wine_server_call(req)))
+            {
+                SetRect(&monitor_rect, reply->monitor_rect.left, reply->monitor_rect.top,
+                        reply->monitor_rect.right, reply->monitor_rect.bottom);
+            }
+        }
+        SERVER_END_REQ;
+
+        if (status)
+            break;
 
         UnionRect(&virtual_rect, &virtual_rect, &monitor_rect);
         if (i == 1)
@@ -189,13 +191,8 @@ static BOOL update_screen_cache(void)
     primary_monitor_rect = primary_rect;
     last_query_screen_time = filetime;
     LeaveCriticalSection(&screen_section);
-    ret = TRUE;
-fail:
-    SetupDiDestroyDeviceInfoList(devinfo);
     release_display_device_init_mutex(mutex);
-    if (!ret)
-        WARN("Update screen cache failed!\n");
-    return ret;
+    return TRUE;
 }
 
 POINT virtual_screen_to_root(INT x, INT y)
@@ -287,6 +284,31 @@ RECT get_work_area(const RECT *monitor_rect)
     /* Try _GTK_WORKAREAS first as _NET_WORKAREA may be incorrect on multi-monitor systems */
     if (!XGetWindowProperty(gdi_display, DefaultRootWindow(gdi_display),
                             x11drv_atom(_GTK_WORKAREAS_D0), 0, ~0, False, XA_CARDINAL, &type,
+                            &format, &count, &remaining, (unsigned char **)&work_area))
+    {
+        if (type == XA_CARDINAL && format == 32 && count >= 4)
+        {
+            for (i = 0; i + 3 < count; i += 4)
+            {
+                work_rect.left = work_area[i * 4];
+                work_rect.top = work_area[i * 4 + 1];
+                work_rect.right = work_rect.left + work_area[i * 4 + 2];
+                work_rect.bottom = work_rect.top + work_area[i * 4 + 3];
+
+                if (IntersectRect(&work_rect, &work_rect, monitor_rect))
+                {
+                    TRACE("work_rect:%s.\n", wine_dbgstr_rect(&work_rect));
+                    XFree(work_area);
+                    return work_rect;
+                }
+            }
+        }
+        XFree(work_area);
+    }
+
+    /* CodeWeavers Hack bug 5752: query the _CX_WORKAREA property of the root window in preference to _NET_WORKAREA. */
+    if (!XGetWindowProperty(gdi_display, DefaultRootWindow(gdi_display),
+                            x11drv_atom(_CX_WORKAREA), 0, ~0, False, XA_CARDINAL, &type,
                             &format, &count, &remaining, (unsigned char **)&work_area))
     {
         if (type == XA_CARDINAL && format == 32 && count >= 4)
@@ -586,6 +608,8 @@ static BOOL X11DRV_InitMonitor(HDEVINFO devinfo, const struct x11drv_monitor *mo
 {
     SP_DEVINFO_DATA device_data = {sizeof(SP_DEVINFO_DATA)};
     WCHAR bufferW[MAX_PATH];
+    NTSTATUS status;
+    DWORD length;
     HKEY hkey;
     BOOL ret = FALSE;
 
@@ -620,19 +644,33 @@ static BOOL X11DRV_InitMonitor(HDEVINFO devinfo, const struct x11drv_monitor *mo
     if (!SetupDiSetDevicePropertyW(devinfo, &device_data, &WINE_DEVPROPKEY_MONITOR_STATEFLAGS, DEVPROP_TYPE_UINT32,
                                    (const BYTE *)&monitor->state_flags, sizeof(monitor->state_flags), 0))
         goto done;
-    /* RcMonitor */
-    if (!SetupDiSetDevicePropertyW(devinfo, &device_data, &WINE_DEVPROPKEY_MONITOR_RCMONITOR, DEVPROP_TYPE_BINARY,
-                                   (const BYTE *)&monitor->rc_monitor, sizeof(monitor->rc_monitor), 0))
-        goto done;
-    /* RcWork */
-    if (!SetupDiSetDevicePropertyW(devinfo, &device_data, &WINE_DEVPROPKEY_MONITOR_RCWORK, DEVPROP_TYPE_BINARY,
-                                   (const BYTE *)&monitor->rc_work, sizeof(monitor->rc_work), 0))
-        goto done;
     /* Adapter name */
-    sprintfW(bufferW, adapter_name_fmtW, video_index + 1);
+    length = sprintfW(bufferW, adapter_name_fmtW, video_index + 1);
     if (!SetupDiSetDevicePropertyW(devinfo, &device_data, &WINE_DEVPROPKEY_MONITOR_ADAPTERNAME, DEVPROP_TYPE_STRING,
-                                   (const BYTE *)bufferW, (strlenW(bufferW) + 1) * sizeof(WCHAR), 0))
+                                   (const BYTE *)bufferW, (length + 1) * sizeof(WCHAR), 0))
         goto done;
+
+    /* EnumDisplayMonitors() doesn't enumerate mirrored replicas and inactive monitors */
+    if (monitor_index == 0 && monitor->state_flags & DISPLAY_DEVICE_ACTIVE)
+    {
+        SERVER_START_REQ(create_monitor)
+        {
+            req->monitor_rect.top = monitor->rc_monitor.top;
+            req->monitor_rect.left = monitor->rc_monitor.left;
+            req->monitor_rect.right = monitor->rc_monitor.right;
+            req->monitor_rect.bottom = monitor->rc_monitor.bottom;
+            req->work_rect.top = monitor->rc_work.top;
+            req->work_rect.left = monitor->rc_work.left;
+            req->work_rect.right = monitor->rc_work.right;
+            req->work_rect.bottom = monitor->rc_work.bottom;
+            wine_server_add_data(req, bufferW, length * sizeof(WCHAR));
+            status = wine_server_call(req);
+        }
+        SERVER_END_REQ;
+
+        if (status)
+            goto done;
+    }
 
     ret = TRUE;
 done:
@@ -645,7 +683,9 @@ static void prepare_devices(HKEY video_hkey)
 {
     static const BOOL not_present = FALSE;
     SP_DEVINFO_DATA device_data = {sizeof(device_data)};
+    HMONITOR monitor = NULL;
     HDEVINFO devinfo;
+    NTSTATUS status;
     DWORD i = 0;
 
     /* Remove all monitors */
@@ -656,6 +696,30 @@ static void prepare_devices(HKEY video_hkey)
             ERR("Failed to remove monitor\n");
     }
     SetupDiDestroyDeviceInfoList(devinfo);
+
+    while (TRUE)
+    {
+        SERVER_START_REQ(enum_monitor)
+        {
+            req->index = 0;
+            if (!(status = wine_server_call(req)))
+                monitor = wine_server_ptr_handle(reply->handle);
+        }
+        SERVER_END_REQ;
+
+        if (status)
+            break;
+
+        SERVER_START_REQ(destroy_monitor)
+        {
+            req->handle = wine_server_user_handle(monitor);
+            status = wine_server_call(req);
+        }
+        SERVER_END_REQ;
+
+        if (status)
+            ERR("Failed to destroy monitor %p.\n", monitor);
+    }
 
     /* Clean up old adapter keys for reinitialization */
     RegDeleteTreeW(video_hkey, NULL);

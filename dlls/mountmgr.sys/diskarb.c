@@ -60,10 +60,10 @@ typedef struct
 
 #define DKIOCSCSIIDENTIFY _IOR('d', 254, dk_scsi_identify_t)
 
-static void appeared_callback( DADiskRef disk, void *context )
+static void appeared_callback( DADiskRef disk, void * HOSTPTR context )
 {
     CFDictionaryRef dict = DADiskCopyDescription( disk );
-    const void *ref;
+    const void * HOSTPTR ref;
     char device[64];
     char mount_point[PATH_MAX];
     char model[64];
@@ -174,15 +174,15 @@ done:
     CFRelease( dict );
 }
 
-static void changed_callback( DADiskRef disk, CFArrayRef keys, void *context )
+static void changed_callback( DADiskRef disk, CFArrayRef keys, void * HOSTPTR context )
 {
     appeared_callback( disk, context );
 }
 
-static void disappeared_callback( DADiskRef disk, void *context )
+static void disappeared_callback( DADiskRef disk, void * HOSTPTR context )
 {
     CFDictionaryRef dict = DADiskCopyDescription( disk );
-    const void *ref;
+    const void * HOSTPTR ref;
     char device[100];
 
     if (!dict) return;

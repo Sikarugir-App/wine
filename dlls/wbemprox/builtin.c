@@ -432,6 +432,12 @@ static const struct column col_videocontroller[] =
     { L"VideoModeDescription",        CIM_STRING|COL_FLAG_DYNAMIC },
     { L"VideoProcessor",              CIM_STRING|COL_FLAG_DYNAMIC },
 };
+static const struct column col_serverfeature[] =
+{
+    { L"ID",       CIM_UINT32|COL_FLAG_KEY },
+    { L"ParentID", CIM_UINT32 },
+    { L"Name",     CIM_STRING },
+};
 static const struct column col_winsat[] =
 {
     { L"CPUScore",              CIM_REAL32 },
@@ -824,6 +830,12 @@ struct record_videocontroller
     const WCHAR *videomodedescription;
     const WCHAR *videoprocessor;
 };
+struct record_serverfeature
+{
+    UINT32       id;
+    UINT32       parentid;
+    const WCHAR *name;
+};
 struct record_winsat
 {
     FLOAT        cpuscore;
@@ -908,6 +920,10 @@ static const struct array systemenclosure_chassistypes_array =
 static const struct record_systemsecurity data_systemsecurity[] =
 {
     { security_get_sd, security_set_sd }
+};
+static const struct record_serverfeature data_serverfeatures[] =
+{
+    { 35, 0, L"Desktop Experience" },
 };
 static const struct record_winsat data_winsat[] =
 {
@@ -4015,11 +4031,33 @@ static struct table builtin_classes[] =
 #undef C
 #undef D
 
+static struct table server_feature[] =
+{
+    { L"Win32_ServerFeature", ARRAY_SIZE(col_serverfeature), col_serverfeature, ARRAY_SIZE(data_serverfeatures), 0, (BYTE *)data_serverfeatures },
+};
+
+static BOOL is_onenote(void)
+{
+    static const char *onenote = "ONENOTE.EXE";
+    char name[MAX_PATH], *ptr;
+
+    if (!GetModuleFileNameA(NULL, name, sizeof(name)))
+        return FALSE;
+
+    ptr = strstr(name, onenote);
+    return ptr && !ptr[strlen(onenote)];
+}
+
 void init_table_list( void )
 {
     static struct list tables = LIST_INIT( tables );
     UINT i;
 
     for (i = 0; i < ARRAY_SIZE(builtin_classes); i++) list_add_tail( &tables, &builtin_classes[i].entry );
+
+    /* CXHACK: 16057 - Client system do not support this class, for some reason OneNote asks for it anyway. */
+    if (is_onenote())
+        list_add_tail( &tables, &server_feature[0].entry );
+
     table_list = &tables;
 }

@@ -46,6 +46,7 @@
 #include "win.h"
 #include "user_private.h"
 #include "wine/gdi_driver.h"
+#include "wine/server.h"
 #include "wine/asm.h"
 #include "wine/debug.h"
 
@@ -101,24 +102,9 @@ DEFINE_DEVPROPKEY(DEVPROPKEY_MONITOR_OUTPUT_ID, 0xca085853, 0x16ce, 0x48aa, 0xb1
 
 /* Wine specific monitor properties */
 DEFINE_DEVPROPKEY(WINE_DEVPROPKEY_MONITOR_STATEFLAGS, 0x233a9ef3, 0xafc4, 0x4abd, 0xb5, 0x64, 0xc3, 0x2f, 0x21, 0xf1, 0x53, 0x5b, 2);
-DEFINE_DEVPROPKEY(WINE_DEVPROPKEY_MONITOR_RCMONITOR, 0x233a9ef3, 0xafc4, 0x4abd, 0xb5, 0x64, 0xc3, 0x2f, 0x21, 0xf1, 0x53, 0x5b, 3);
-DEFINE_DEVPROPKEY(WINE_DEVPROPKEY_MONITOR_RCWORK, 0x233a9ef3, 0xafc4, 0x4abd, 0xb5, 0x64, 0xc3, 0x2f, 0x21, 0xf1, 0x53, 0x5b, 4);
 DEFINE_DEVPROPKEY(WINE_DEVPROPKEY_MONITOR_ADAPTERNAME, 0x233a9ef3, 0xafc4, 0x4abd, 0xb5, 0x64, 0xc3, 0x2f, 0x21, 0xf1, 0x53, 0x5b, 5);
 
 #define NULLDRV_DEFAULT_HMONITOR ((HMONITOR)(UINT_PTR)(0x10000 + 1))
-
-/* Cached monitor information */
-static MONITORINFOEXW *monitors;
-static UINT monitor_count;
-static FILETIME last_query_monitors_time;
-static CRITICAL_SECTION monitors_section;
-static CRITICAL_SECTION_DEBUG monitors_critsect_debug =
-{
-    0, 0, &monitors_section,
-    { &monitors_critsect_debug.ProcessLocksList, &monitors_critsect_debug.ProcessLocksList },
-      0, 0, { (DWORD_PTR)(__FILE__ ": monitors_section") }
-};
-static CRITICAL_SECTION monitors_section = { &monitors_critsect_debug, -1 , 0, 0, 0, 0 };
 
 static HDC display_dc;
 static CRITICAL_SECTION display_dc_section;
@@ -143,7 +129,6 @@ static DPI_AWARENESS dpi_awareness;
 static DPI_AWARENESS default_awareness = DPI_AWARENESS_UNAWARE;
 
 static HKEY volatile_base_key;
-static HKEY video_key;
 
 union sysparam_all_entry;
 
@@ -570,7 +555,13 @@ void release_display_dc( HDC hdc )
 
 static HANDLE get_display_device_init_mutex( void )
 {
-    HANDLE mutex = CreateMutexW( NULL, FALSE, L"display_device_init" );
+    HANDLE mutex;
+    DWORD error;
+
+    /* Restore the error code */
+    error = GetLastError();
+    mutex = CreateMutexW( NULL, FALSE, L"display_device_init" );
+    SetLastError( error );
 
     WaitForSingleObject( mutex, INFINITE );
     return mutex;
@@ -3775,102 +3766,36 @@ HMONITOR WINAPI MonitorFromWindow(HWND hWnd, DWORD dwFlags)
     return MonitorFromRect( &rect, dwFlags );
 }
 
-/* Return FALSE on failure and TRUE on success */
-static BOOL update_monitor_cache(void)
-{
-    SP_DEVINFO_DATA device_data = {sizeof(device_data)};
-    HDEVINFO devinfo = INVALID_HANDLE_VALUE;
-    MONITORINFOEXW *monitor_array;
-    FILETIME filetime = {0};
-    DWORD device_count = 0;
-    HANDLE mutex = NULL;
-    DWORD state_flags;
-    BOOL ret = FALSE;
-    BOOL is_replica;
-    DWORD i = 0, j;
-    DWORD type;
-
-    /* Update monitor cache from SetupAPI if it's outdated */
-    if (!video_key && RegOpenKeyW( HKEY_LOCAL_MACHINE, L"HARDWARE\\DEVICEMAP\\VIDEO", &video_key ))
-        return FALSE;
-    if (RegQueryInfoKeyW( video_key, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, &filetime ))
-        return FALSE;
-    if (CompareFileTime( &filetime, &last_query_monitors_time ) < 1)
-        return TRUE;
-
-    mutex = get_display_device_init_mutex();
-    EnterCriticalSection( &monitors_section );
-    devinfo = SetupDiGetClassDevsW( &GUID_DEVCLASS_MONITOR, L"DISPLAY", NULL, DIGCF_PRESENT );
-
-    while (SetupDiEnumDeviceInfo( devinfo, i++, &device_data ))
-    {
-        /* Inactive monitors don't get enumerated */
-        if (!SetupDiGetDevicePropertyW( devinfo, &device_data, &WINE_DEVPROPKEY_MONITOR_STATEFLAGS, &type,
-                                        (BYTE *)&state_flags, sizeof(DWORD), NULL, 0 ))
-            goto fail;
-        if (state_flags & DISPLAY_DEVICE_ACTIVE)
-            device_count++;
-    }
-
-    if (device_count && monitor_count < device_count)
-    {
-        monitor_array = heap_alloc( device_count * sizeof(*monitor_array) );
-        if (!monitor_array)
-            goto fail;
-        heap_free( monitors );
-        monitors = monitor_array;
-    }
-
-    for (i = 0, monitor_count = 0; SetupDiEnumDeviceInfo( devinfo, i, &device_data ); i++)
-    {
-        if (!SetupDiGetDevicePropertyW( devinfo, &device_data, &WINE_DEVPROPKEY_MONITOR_STATEFLAGS, &type,
-                                        (BYTE *)&state_flags, sizeof(DWORD), NULL, 0 ))
-            goto fail;
-        if (!(state_flags & DISPLAY_DEVICE_ACTIVE))
-            continue;
-        if (!SetupDiGetDevicePropertyW( devinfo, &device_data, &WINE_DEVPROPKEY_MONITOR_RCMONITOR, &type,
-                                        (BYTE *)&monitors[monitor_count].rcMonitor, sizeof(RECT), NULL, 0 ))
-            goto fail;
-
-        /* Replicas in mirroring monitor sets don't get enumerated */
-        is_replica = FALSE;
-        for (j = 0; j < monitor_count; j++)
-        {
-            if (EqualRect(&monitors[j].rcMonitor, &monitors[monitor_count].rcMonitor))
-            {
-                is_replica = TRUE;
-                break;
-            }
-        }
-        if (is_replica)
-            continue;
-
-        if (!SetupDiGetDevicePropertyW( devinfo, &device_data, &WINE_DEVPROPKEY_MONITOR_RCWORK, &type,
-                                        (BYTE *)&monitors[monitor_count].rcWork, sizeof(RECT), NULL, 0 ))
-            goto fail;
-        if (!SetupDiGetDevicePropertyW( devinfo, &device_data, &WINE_DEVPROPKEY_MONITOR_ADAPTERNAME, &type,
-                                        (BYTE *)monitors[monitor_count].szDevice, CCHDEVICENAME * sizeof(WCHAR), NULL, 0))
-            goto fail;
-        monitors[monitor_count].dwFlags =
-            !wcscmp( L"\\\\.\\DISPLAY1", monitors[monitor_count].szDevice ) ? MONITORINFOF_PRIMARY : 0;
-
-        monitor_count++;
-    }
-
-    last_query_monitors_time = filetime;
-    ret = TRUE;
-fail:
-    SetupDiDestroyDeviceInfoList( devinfo );
-    LeaveCriticalSection( &monitors_section );
-    release_display_device_init_mutex( mutex );
-    return ret;
-}
-
 BOOL CDECL nulldrv_GetMonitorInfo( HMONITOR handle, MONITORINFO *info )
 {
-    UINT index = (UINT_PTR)handle - 1;
+    NTSTATUS status;
 
     TRACE("(%p, %p)\n", handle, info);
+
+    SERVER_START_REQ( get_monitor_info )
+    {
+        req->handle = wine_server_user_handle( handle );
+        if (info->cbSize >= sizeof(MONITORINFOEXW))
+            wine_server_set_reply( req, ((MONITORINFOEXW *)info)->szDevice,
+                                   sizeof(((MONITORINFOEXW *)info)->szDevice) - sizeof(WCHAR) );
+        if (!(status = wine_server_call( req )))
+        {
+            SetRect( &info->rcMonitor, reply->monitor_rect.left, reply->monitor_rect.top,
+                     reply->monitor_rect.right, reply->monitor_rect.bottom );
+            SetRect( &info->rcWork, reply->work_rect.left, reply->work_rect.top,
+                     reply->work_rect.right, reply->work_rect.bottom );
+            if (!IsRectEmpty( &info->rcMonitor ) && !info->rcMonitor.top && !info->rcMonitor.left)
+                info->dwFlags = MONITORINFOF_PRIMARY;
+            else
+                info->dwFlags = 0;
+            if (info->cbSize >= sizeof(MONITORINFOEXW))
+                ((MONITORINFOEXW *)info)->szDevice[wine_server_reply_size( req ) / sizeof(WCHAR)] = 0;
+        }
+    }
+    SERVER_END_REQ;
+
+    if (!status)
+        return TRUE;
 
     /* Fallback to report one monitor */
     if (handle == NULLDRV_DEFAULT_HMONITOR)
@@ -3884,26 +3809,8 @@ BOOL CDECL nulldrv_GetMonitorInfo( HMONITOR handle, MONITORINFO *info )
         return TRUE;
     }
 
-    if (!update_monitor_cache())
-        return FALSE;
-
-    EnterCriticalSection( &monitors_section );
-    if (index < monitor_count)
-    {
-        info->rcMonitor = monitors[index].rcMonitor;
-        info->rcWork = monitors[index].rcWork;
-        info->dwFlags = monitors[index].dwFlags;
-        if (info->cbSize >= sizeof(MONITORINFOEXW))
-            lstrcpyW( ((MONITORINFOEXW *)info)->szDevice, monitors[index].szDevice );
-        LeaveCriticalSection( &monitors_section );
-        return TRUE;
-    }
-    else
-    {
-        LeaveCriticalSection( &monitors_section );
-        SetLastError( ERROR_INVALID_MONITOR_HANDLE );
-        return FALSE;
-    }
+    SetLastError( ERROR_INVALID_MONITOR_HANDLE );
+    return FALSE;
 }
 
 /***********************************************************************
@@ -3988,6 +3895,30 @@ __ASM_GLOBAL_FUNC( enum_mon_callback_wrapper,
     __ASM_CFI(".cfi_def_cfa %esp,4\n\t")
     __ASM_CFI(".cfi_same_value %ebp\n\t")
     "ret" )
+#elif defined(__i386_on_x86_64__)
+/* Some apps pass a non-stdcall callback to EnumDisplayMonitors,
+ * so we need a small assembly wrapper to call it.
+ * MJ's Help Diagnostic expects that %ecx contains the address to the rect.
+ */
+extern BOOL CDECL enum_mon_callback_wrapper( HMONITOR monitor, LPRECT rect, struct enum_mon_data *data );
+__ASM_GLOBAL_FUNC32( __ASM_THUNK_NAME(enum_mon_callback_wrapper),
+                     "pushl %ebp\n\t"
+                     __ASM_CFI(".cfi_adjust_cfa_offset 4\n\t")
+                     __ASM_CFI(".cfi_rel_offset %ebp,0\n\t")
+                     "movl %esp,%ebp\n\t"
+                     __ASM_CFI(".cfi_def_cfa_register %ebp\n\t")
+                     "subl $8,%esp\n\t"
+                     "movl 16(%ebp),%eax\n\t"    /* data */
+                     "movl 12(%ebp),%ecx\n\t"    /* rect */
+                     "pushl 4(%eax)\n\t"         /* data->lparam */
+                     "pushl %ecx\n\t"            /* rect */
+                     "pushl 8(%eax)\n\t"         /* data->hdc */
+                     "pushl 8(%ebp)\n\t"         /* monitor */
+                     "call *(%eax)\n\t"          /* data->proc */
+                     "leave\n\t"
+                     __ASM_CFI(".cfi_def_cfa %esp,4\n\t")
+                     __ASM_CFI(".cfi_same_value %ebp\n\t")
+                     "ret" )
 #endif /* __i386__ */
 
 static BOOL CALLBACK enum_mon_callback( HMONITOR monitor, HDC hdc, LPRECT rect, LPARAM lp )
@@ -3999,6 +3930,11 @@ static BOOL CALLBACK enum_mon_callback( HMONITOR monitor, HDC hdc, LPRECT rect, 
     if (!IntersectRect( &monrect, &monrect, &data->limit )) return TRUE;
 #ifdef __i386__
     return enum_mon_callback_wrapper( monitor, &monrect, data );
+#elif defined(__i386_on_x86_64__)
+    if (wine_is_thunk32to64(data->proc))
+        return data->proc( monitor, data->hdc, &monrect, data->lparam );
+    else
+        return WINE_CALL_IMPL32(enum_mon_callback_wrapper)( monitor, &monrect, data );
 #else
     return data->proc( monitor, data->hdc, &monrect, data->lparam );
 #endif
@@ -4006,32 +3942,47 @@ static BOOL CALLBACK enum_mon_callback( HMONITOR monitor, HDC hdc, LPRECT rect, 
 
 BOOL CDECL nulldrv_EnumDisplayMonitors( HDC hdc, RECT *rect, MONITORENUMPROC proc, LPARAM lp )
 {
+    HMONITOR monitor = NULL;
     RECT monitor_rect;
+    NTSTATUS status;
+    HANDLE mutex;
     DWORD i = 0;
 
     TRACE("(%p, %p, %p, 0x%lx)\n", hdc, rect, proc, lp);
 
-    if (update_monitor_cache())
+    mutex = get_display_device_init_mutex();
+    while (TRUE)
     {
-        while (TRUE)
+        SERVER_START_REQ( enum_monitor )
         {
-            EnterCriticalSection( &monitors_section );
-            if (i >= monitor_count)
+            req->index = i;
+            if (!(status = wine_server_call( req )))
             {
-                LeaveCriticalSection( &monitors_section );
-                return TRUE;
+                SetRect( &monitor_rect, reply->monitor_rect.left, reply->monitor_rect.top,
+                         reply->monitor_rect.right, reply->monitor_rect.bottom );
+                monitor = wine_server_ptr_handle( reply->handle );
             }
-            monitor_rect = monitors[i].rcMonitor;
-            LeaveCriticalSection( &monitors_section );
-
-            if (!proc( (HMONITOR)(UINT_PTR)(i + 1), hdc, &monitor_rect, lp ))
-                return FALSE;
-
-            ++i;
         }
-    }
+        SERVER_END_REQ;
 
-    /* Fallback to report one monitor if using SetupAPI failed */
+        if (status)
+            break;
+
+        ++i;
+        release_display_device_init_mutex( mutex );
+
+        if (!proc( monitor, hdc, &monitor_rect, lp ))
+            return FALSE;
+
+        mutex = get_display_device_init_mutex();
+    }
+    release_display_device_init_mutex( mutex );
+
+    if (i)
+        return TRUE;
+
+    /* Fallback to report one monitor if wineserver calls failed */
+    ERR("Failed to enumerate monitors, reporting a 640x480 monitor.\n");
     SetRect( &monitor_rect, 0, 0, 640, 480 );
     if (!proc( NULLDRV_DEFAULT_HMONITOR, hdc, &monitor_rect, lp ))
         return FALSE;

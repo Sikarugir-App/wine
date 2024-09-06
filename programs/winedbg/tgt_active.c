@@ -674,9 +674,9 @@ void	dbg_run_debuggee(const char* args)
     }
 }
 
-static BOOL str2int(const char* str, DWORD_PTR* val)
+static BOOL str2int(const char* HOSTPTR str, DWORD_PTR* val)
 {
-    char*   ptr;
+    char* HOSTPTR ptr;
 
     *val = strtol(str, &ptr, 10);
     return str < ptr && !*ptr;
@@ -754,6 +754,8 @@ static void output_system_info(void)
 {
 #ifdef __i386__
     static const char platform[] = "i386";
+#elif defined(__i386_on_x86_64__)
+    static const char platform[] = "x86_32on64";
 #elif defined(__x86_64__)
     static const char platform[] = "x86_64";
 #elif defined(__arm__)
@@ -1023,16 +1025,45 @@ static BOOL tgt_process_active_close_process(struct dbg_process* pcs, BOOL kill)
     return TRUE;
 }
 
-static BOOL tgt_process_active_read(HANDLE hProcess, const void* addr,
-                                    void* buffer, SIZE_T len, SIZE_T* rlen)
+static BOOL tgt_process_active_read(HANDLE hProcess, const void* HOSTPTR addr,
+                                    void* buffer, SIZE_T len, SIZE_T* HOSTPTR rlen)
 {
-    return ReadProcessMemory( hProcess, addr, buffer, len, rlen );
+    const void * WIN32PTR guestptr;
+    SIZE_T guestlen;
+    BOOL ret;
+#ifdef __i386_on_x86_64__
+    guestptr = TRUNCCAST(const void *, addr);
+    if (addr != guestptr)
+    {
+        FIXME("Read of 64 bit address %p from 32 bit process.\n", addr);
+        return FALSE;
+    }
+#else
+    guestptr = addr;
+#endif
+    ret = ReadProcessMemory( hProcess, guestptr, buffer, len, &guestlen );
+    *rlen = guestlen;
+    return ret;
 }
 
-static BOOL tgt_process_active_write(HANDLE hProcess, void* addr,
+static BOOL tgt_process_active_write(HANDLE hProcess, void* HOSTPTR addr,
                                      const void* buffer, SIZE_T len, SIZE_T* wlen)
 {
-    return WriteProcessMemory( hProcess, addr, buffer, len, wlen );
+    void * WIN32PTR guestptr;
+    SIZE_T guestlen;
+    BOOL ret;
+#ifdef __i386_on_x86_64__
+    guestptr = TRUNCCAST(void *, addr);
+    if (addr != guestptr)
+    {
+        FIXME("Read of 64 bit address %p from 32 bit process.\n", addr);
+        return FALSE;
+    }
+#else
+    guestptr = addr;
+#endif
+    ret = WriteProcessMemory( hProcess, guestptr, buffer, len, &guestlen );
+    *wlen = guestlen;
 }
 
 static BOOL tgt_process_active_get_selector(HANDLE hThread, DWORD sel, LDT_ENTRY* le)

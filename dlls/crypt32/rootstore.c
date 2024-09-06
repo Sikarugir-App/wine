@@ -26,6 +26,7 @@
 #include "wincrypt.h"
 #include "winternl.h"
 #include "wine/debug.h"
+#include "wine/heap.h"
 #include "crypt32_private.h"
 
 WINE_DEFAULT_DEBUG_CHANNEL(crypt);

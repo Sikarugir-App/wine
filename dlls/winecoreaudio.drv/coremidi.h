@@ -23,6 +23,8 @@
 
 #include <CoreFoundation/CoreFoundation.h>
 
+#include "wine/hostptraddrspace_enter.h"
+
 #ifdef WINE_DEFINITIONS
 /*
  * Due to CoreMIDI headers conflict redefine some types for Wine
@@ -73,6 +75,8 @@ extern void MIDIIn_ReadProc(const MIDIPacketList *pktlist, void *refCon, void *c
 extern void MIDIOut_Send(MIDIPortRef port, MIDIEndpointRef dest, UInt8 *buffer, unsigned length);
 
 /* midi.c */
-void MIDIIn_SendMessage(UInt16 devID, const void *buffer, UInt16 length);
+void MIDIIn_SendMessage(UInt16 devID, const void * HOSTPTR buffer, UInt16 length);
+
+#include "wine/hostptraddrspace_exit.h"
 
 #endif

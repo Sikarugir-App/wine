@@ -175,7 +175,7 @@ ULONG CDECL ldap_get_next_page_s( WLDAP32_LDAP *ld, PLDAPSearch search,
     struct l_timeval *timeout, ULONG pagesize, ULONG *count,
     WLDAP32_LDAPMessage **results )
 {
-#ifdef HAVE_LDAP
+#if defined(HAVE_LDAP) && !defined(__i386_on_x86_64__)
     ULONG ret;
 
     TRACE( "(%p, %p, %p, %u, %p, %p)\n", ld, search, timeout,
@@ -215,7 +215,7 @@ ULONG CDECL ldap_get_next_page_s( WLDAP32_LDAP *ld, PLDAPSearch search,
 ULONG CDECL ldap_get_paged_count( WLDAP32_LDAP *ld, PLDAPSearch search,
     ULONG *count, WLDAP32_LDAPMessage *results )
 {
-#ifdef HAVE_LDAP
+#if defined(HAVE_LDAP) && !defined(__i386_on_x86_64__)
     ULONG ret;
     LDAPControlW **server_ctrls = NULL;
 

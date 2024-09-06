@@ -24,9 +24,10 @@
 #include <pthread.h>
 #include <signal.h>
 #include "unixlib.h"
+#define WINE_LIST_HOSTADDRSPACE
 #include "wine/list.h"
 
-#ifdef __i386__
+#if defined(__i386__) || defined(__i386_on_x86_64__)
 static const enum cpu_type client_cpu = CPU_x86;
 #elif defined(__x86_64__)
 static const enum cpu_type client_cpu = CPU_x86_64;
@@ -57,6 +58,7 @@ struct ntdll_thread_data
     struct list        entry;         /* entry in TEB list */
     PRTL_THREAD_START_ROUTINE start;  /* thread entry point */
     void              *param;         /* thread entry point parameter */
+    int                esync_apc_fd;  /* fd to wait on for user APCs */
 };
 
 C_ASSERT( sizeof(struct ntdll_thread_data) <= sizeof(((TEB *)0)->GdiTebBatch) );
@@ -85,6 +87,8 @@ extern void     (WINAPI *pKiUserApcDispatcher)(CONTEXT*,ULONG_PTR,ULONG_PTR,ULON
 extern NTSTATUS (WINAPI *pKiUserExceptionDispatcher)(EXCEPTION_RECORD*,CONTEXT*) DECLSPEC_HIDDEN;
 extern void     (WINAPI *pLdrInitializeThunk)(CONTEXT*,void**,ULONG_PTR,ULONG_PTR) DECLSPEC_HIDDEN;
 extern void     (WINAPI *pRtlUserThreadStart)( PRTL_THREAD_START_ROUTINE entry, void *arg ) DECLSPEC_HIDDEN;
+extern void *   (WINAPI *pRtlAllocateHeap)( HANDLE heap, ULONG flags, SIZE_T size ) DECLSPEC_HIDDEN;
+extern BOOLEAN  (WINAPI *pRtlFreeHeap)( HANDLE heap, ULONG flags, void *ptr ) DECLSPEC_HIDDEN;
 extern NTSTATUS CDECL fast_RtlpWaitForCriticalSection( RTL_CRITICAL_SECTION *crit, int timeout ) DECLSPEC_HIDDEN;
 extern NTSTATUS CDECL fast_RtlpUnWaitCriticalSection( RTL_CRITICAL_SECTION *crit ) DECLSPEC_HIDDEN;
 extern NTSTATUS CDECL fast_RtlDeleteCriticalSection( RTL_CRITICAL_SECTION *crit ) DECLSPEC_HIDDEN;
@@ -113,19 +117,20 @@ extern NTSTATUS CDECL unwind_builtin_dll( ULONG type, struct _DISPATCHER_CONTEXT
 
 extern void CDECL set_show_dot_files( BOOL enable ) DECLSPEC_HIDDEN;
 
-extern const char *home_dir DECLSPEC_HIDDEN;
-extern const char *data_dir DECLSPEC_HIDDEN;
-extern const char *build_dir DECLSPEC_HIDDEN;
-extern const char *config_dir DECLSPEC_HIDDEN;
-extern const char *user_name DECLSPEC_HIDDEN;
-extern const char **dll_paths DECLSPEC_HIDDEN;
-extern USHORT *uctable DECLSPEC_HIDDEN;
-extern USHORT *lctable DECLSPEC_HIDDEN;
+extern const char * HOSTPTR home_dir DECLSPEC_HIDDEN;
+extern const char * HOSTPTR data_dir DECLSPEC_HIDDEN;
+extern const char * HOSTPTR build_dir DECLSPEC_HIDDEN;
+extern const char * HOSTPTR config_dir DECLSPEC_HIDDEN;
+extern const char * HOSTPTR user_name DECLSPEC_HIDDEN;
+extern const char * HOSTPTR * HOSTPTR dll_paths DECLSPEC_HIDDEN;
+extern USHORT * HOSTPTR uctable DECLSPEC_HIDDEN;
+extern USHORT * HOSTPTR lctable DECLSPEC_HIDDEN;
 extern SIZE_T startup_info_size DECLSPEC_HIDDEN;
 extern int main_argc DECLSPEC_HIDDEN;
-extern char **main_argv DECLSPEC_HIDDEN;
-extern char **main_envp DECLSPEC_HIDDEN;
-extern WCHAR **main_wargv DECLSPEC_HIDDEN;
+extern char * HOSTPTR * HOSTPTR main_argv DECLSPEC_HIDDEN;
+extern char * HOSTPTR * HOSTPTR main_envp DECLSPEC_HIDDEN;
+extern WCHAR * HOSTPTR * HOSTPTR main_wargv DECLSPEC_HIDDEN;
+extern SIZE_T main_wargv_size DECLSPEC_HIDDEN;
 extern unsigned int server_cpus DECLSPEC_HIDDEN;
 extern BOOL is_wow64 DECLSPEC_HIDDEN;
 extern BOOL process_exiting DECLSPEC_HIDDEN;
@@ -133,17 +138,25 @@ extern HANDLE keyed_event DECLSPEC_HIDDEN;
 extern timeout_t server_start_time DECLSPEC_HIDDEN;
 extern sigset_t server_block_set DECLSPEC_HIDDEN;
 extern struct _KUSER_SHARED_DATA *user_shared_data DECLSPEC_HIDDEN;
-#ifdef __i386__
+extern SYSTEM_CPU_INFORMATION cpu_info DECLSPEC_HIDDEN;
+#if defined(__i386__) || defined(__i386_on_x86_64__)
 extern struct ldt_copy __wine_ldt_copy DECLSPEC_HIDDEN;
 #endif
 
-extern void init_environment( int argc, char *argv[], char *envp[] ) DECLSPEC_HIDDEN;
-extern DWORD ntdll_umbstowcs( const char *src, DWORD srclen, WCHAR *dst, DWORD dstlen ) DECLSPEC_HIDDEN;
-extern int ntdll_wcstoumbs( const WCHAR *src, DWORD srclen, char *dst, DWORD dstlen, BOOL strict ) DECLSPEC_HIDDEN;
-extern char **build_envp( const WCHAR *envW ) DECLSPEC_HIDDEN;
-extern NTSTATUS exec_wineloader( char **argv, int socketfd, const pe_image_info_t *pe_info ) DECLSPEC_HIDDEN;
+#ifdef __i386_on_x86_64__
+extern unsigned short wine_32on64_cs32;
+extern unsigned short wine_32on64_cs64;
+extern unsigned short wine_32on64_ds32;
+#endif
+extern int wine_needs_32on64(void);
+
+extern void init_environment( int argc, char * HOSTPTR * HOSTPTR argv, char * HOSTPTR * HOSTPTR envp ) DECLSPEC_HIDDEN;
+extern DWORD ntdll_umbstowcs( const char * HOSTPTR src, DWORD srclen, WCHAR * HOSTPTR dst, DWORD dstlen ) DECLSPEC_HIDDEN;
+extern int ntdll_wcstoumbs( const WCHAR * HOSTPTR src, DWORD srclen, char * HOSTPTR dst, DWORD dstlen, BOOL strict ) DECLSPEC_HIDDEN;
+extern char * HOSTPTR * HOSTPTR build_envp( const WCHAR *envW ) DECLSPEC_HIDDEN;
+extern NTSTATUS exec_wineloader( char * HOSTPTR * HOSTPTR argv, int socketfd, const pe_image_info_t *pe_info ) DECLSPEC_HIDDEN;
 extern void start_server( BOOL debug ) DECLSPEC_HIDDEN;
-extern ULONG_PTR get_image_address(void) DECLSPEC_HIDDEN;
+extern ULONG_HOSTPTR get_image_address(void) DECLSPEC_HIDDEN;
 
 extern unsigned int server_call_unlocked( void *req_ptr ) DECLSPEC_HIDDEN;
 extern void server_enter_uninterrupted_section( pthread_mutex_t *mutex, sigset_t *sigset ) DECLSPEC_HIDDEN;
@@ -171,11 +184,11 @@ extern void wait_suspend( CONTEXT *context ) DECLSPEC_HIDDEN;
 extern NTSTATUS send_debug_event( EXCEPTION_RECORD *rec, CONTEXT *context, BOOL first_chance ) DECLSPEC_HIDDEN;
 extern NTSTATUS set_thread_context( HANDLE handle, const context_t *context, BOOL *self ) DECLSPEC_HIDDEN;
 extern NTSTATUS get_thread_context( HANDLE handle, context_t *context, unsigned int flags, BOOL *self ) DECLSPEC_HIDDEN;
-extern NTSTATUS alloc_object_attributes( const OBJECT_ATTRIBUTES *attr, struct object_attributes **ret,
+extern NTSTATUS alloc_object_attributes( const OBJECT_ATTRIBUTES *attr, struct object_attributes * HOSTPTR * HOSTPTR ret,
                                          data_size_t *ret_len ) DECLSPEC_HIDDEN;
 
-extern void *anon_mmap_fixed( void *start, size_t size, int prot, int flags ) DECLSPEC_HIDDEN;
-extern void *anon_mmap_alloc( size_t size, int prot ) DECLSPEC_HIDDEN;
+extern void * HOSTPTR anon_mmap_fixed( void * HOSTPTR start, size_t size, int prot, int flags ) DECLSPEC_HIDDEN;
+extern void * HOSTPTR anon_mmap_alloc( size_t size, int prot ) DECLSPEC_HIDDEN;
 extern void virtual_init(void) DECLSPEC_HIDDEN;
 extern ULONG_PTR get_system_affinity_mask(void) DECLSPEC_HIDDEN;
 extern void virtual_get_system_info( SYSTEM_BASIC_INFORMATION *info ) DECLSPEC_HIDDEN;
@@ -187,7 +200,7 @@ extern NTSTATUS virtual_clear_tls_index( ULONG index ) DECLSPEC_HIDDEN;
 extern NTSTATUS virtual_alloc_thread_stack( INITIAL_TEB *stack, SIZE_T reserve_size, SIZE_T commit_size,
                                             SIZE_T *pthread_size ) DECLSPEC_HIDDEN;
 extern void virtual_map_user_shared_data(void) DECLSPEC_HIDDEN;
-extern NTSTATUS virtual_handle_fault( void *addr, DWORD err, void *stack ) DECLSPEC_HIDDEN;
+extern NTSTATUS virtual_handle_fault( void * HOSTPTR addr, DWORD err, void *stack ) DECLSPEC_HIDDEN;
 extern unsigned int virtual_locked_server_call( void *req_ptr ) DECLSPEC_HIDDEN;
 extern ssize_t virtual_locked_read( int fd, void *addr, size_t size ) DECLSPEC_HIDDEN;
 extern ssize_t virtual_locked_pread( int fd, void *addr, size_t size, off_t offset ) DECLSPEC_HIDDEN;
@@ -208,13 +221,18 @@ extern BOOL get_thread_times( int unix_pid, int unix_tid, LARGE_INTEGER *kernel_
 extern void signal_init_threading(void) DECLSPEC_HIDDEN;
 extern NTSTATUS signal_alloc_thread( TEB *teb ) DECLSPEC_HIDDEN;
 extern void signal_free_thread( TEB *teb ) DECLSPEC_HIDDEN;
+#ifdef __i386_on_x86_64__
+extern void signal_init_32on64_ldt(void) DECLSPEC_HIDDEN;
+#endif
 extern void signal_init_thread( TEB *teb ) DECLSPEC_HIDDEN;
 extern void signal_init_process(void) DECLSPEC_HIDDEN;
+extern void *signal_init_syscalls(void) DECLSPEC_HIDDEN;
 extern void DECLSPEC_NORETURN signal_start_thread( PRTL_THREAD_START_ROUTINE entry, void *arg,
                                                    BOOL suspend, void *thunk, TEB *teb ) DECLSPEC_HIDDEN;
 extern void DECLSPEC_NORETURN signal_exit_thread( int status, void (*func)(int) ) DECLSPEC_HIDDEN;
 extern void DECLSPEC_NORETURN exec_process( NTSTATUS status ) DECLSPEC_HIDDEN;
 extern void __wine_syscall_dispatcher(void) DECLSPEC_HIDDEN;
+extern void signal_restore_full_cpu_context(void) DECLSPEC_HIDDEN;
 extern void fill_vm_counters( VM_COUNTERS_EX *pvmi, int unix_pid ) DECLSPEC_HIDDEN;
 
 extern NTSTATUS cdrom_DeviceIoControl( HANDLE device, HANDLE event, PIO_APC_ROUTINE apc, void *apc_user,
@@ -229,9 +247,9 @@ extern NTSTATUS tape_DeviceIoControl( HANDLE device, HANDLE event, PIO_APC_ROUTI
                                       ULONG in_size, void *out_buffer, ULONG out_size ) DECLSPEC_HIDDEN;
 
 extern NTSTATUS errno_to_status( int err ) DECLSPEC_HIDDEN;
-extern NTSTATUS nt_to_unix_file_name( const UNICODE_STRING *nameW, char **name_ret, UINT disposition ) DECLSPEC_HIDDEN;
-extern NTSTATUS unix_to_nt_file_name( const char *name, WCHAR **nt ) DECLSPEC_HIDDEN;
-extern NTSTATUS open_unix_file( HANDLE *handle, const char *unix_name, ACCESS_MASK access,
+extern NTSTATUS nt_to_unix_file_name( const UNICODE_STRING *nameW, char * HOSTPTR *name_ret, UINT disposition ) DECLSPEC_HIDDEN;
+extern NTSTATUS unix_to_nt_file_name( const char * HOSTPTR name, WCHAR * HOSTPTR * HOSTPTR nt ) DECLSPEC_HIDDEN;
+extern NTSTATUS open_unix_file( HANDLE *handle, const char * HOSTPTR unix_name, ACCESS_MASK access,
                                 OBJECT_ATTRIBUTES *attr, ULONG attributes, ULONG sharing, ULONG disposition,
                                 ULONG options, void *ea_buffer, ULONG ea_length ) DECLSPEC_HIDDEN;
 extern void init_files(void) DECLSPEC_HIDDEN;
@@ -245,7 +263,7 @@ extern void WINAPI DECLSPEC_NORETURN call_user_apc_dispatcher( CONTEXT *context_
                                                                void (WINAPI *dispatcher)(CONTEXT*,ULONG_PTR,ULONG_PTR,ULONG_PTR,PNTAPCFUNC) ) DECLSPEC_HIDDEN;
 extern void WINAPI DECLSPEC_NORETURN call_user_exception_dispatcher( EXCEPTION_RECORD *rec, CONTEXT *context,
                                                                      NTSTATUS (WINAPI *dispatcher)(EXCEPTION_RECORD*,CONTEXT*) ) DECLSPEC_HIDDEN;
-extern void WINAPI DECLSPEC_NORETURN call_raise_user_exception_dispatcher( NTSTATUS (WINAPI *dispatcher)(void) ) DECLSPEC_HIDDEN;
+extern void WINAPI call_raise_user_exception_dispatcher( NTSTATUS (WINAPI *dispatcher)(void) ) DECLSPEC_HIDDEN;
 
 extern void *get_syscall_frame(void) DECLSPEC_HIDDEN;
 extern void set_syscall_frame(void *frame) DECLSPEC_HIDDEN;
@@ -261,14 +279,14 @@ static inline ULONGLONG ticks_from_time_t( time_t time )
         return ((ULONGLONG)time + SECS_1601_TO_1970) * TICKSPERSEC;
 }
 
-static inline const char *debugstr_us( const UNICODE_STRING *us )
+static inline const char *debugstr_us( const UNICODE_STRING * HOSTPTR us )
 {
     if (!us) return "<null>";
     return debugstr_wn( us->Buffer, us->Length / sizeof(WCHAR) );
 }
 
 /* convert from straight ASCII to Unicode without depending on the current codepage */
-static inline void ascii_to_unicode( WCHAR *dst, const char *src, size_t len )
+static inline void ascii_to_unicode( WCHAR * HOSTPTR dst, const char * HOSTPTR src, size_t len )
 {
     while (len--) *dst++ = (unsigned char)*src++;
 }
@@ -305,7 +323,9 @@ struct xcontext
     ULONG64 host_compaction_mask;
 };
 
-#if defined(__i386__) || defined(__x86_64__)
+#if defined(__i386__) || defined(__i386_on_x86_64__) || defined(__x86_64__)
+extern BOOL xstate_compaction_enabled DECLSPEC_HIDDEN;
+
 static inline XSTATE *xstate_from_context( const CONTEXT *context )
 {
     CONTEXT_EX *xctx = (CONTEXT_EX *)(context + 1);
@@ -378,16 +398,17 @@ static inline void context_init_xstate( CONTEXT *context, void *xstate_buffer )
 }
 #endif
 
-static inline size_t ntdll_wcslen( const WCHAR *str )
+static inline size_t ntdll_wcslen( const WCHAR * HOSTPTR str )
 {
-    const WCHAR *s = str;
+    const WCHAR * HOSTPTR s = str;
     while (*s) s++;
     return s - str;
 }
 
-static inline WCHAR *ntdll_wcscpy( WCHAR *dst, const WCHAR *src )
+/* 32on64 FIXME: If anyone uses the retval we need to make this overloadble. */
+static inline WCHAR * HOSTPTR ntdll_wcscpy( WCHAR * HOSTPTR dst, const WCHAR * HOSTPTR src )
 {
-    WCHAR *p = dst;
+    WCHAR * HOSTPTR p = dst;
     while ((*p++ = *src++));
     return dst;
 }
@@ -398,7 +419,7 @@ static inline WCHAR *ntdll_wcscat( WCHAR *dst, const WCHAR *src )
     return dst;
 }
 
-static inline int ntdll_wcscmp( const WCHAR *str1, const WCHAR *str2 )
+static inline int ntdll_wcscmp( const WCHAR * HOSTPTR str1, const WCHAR * HOSTPTR str2 )
 {
     while (*str1 && (*str1 == *str2)) { str1++; str2++; }
     return *str1 - *str2;
@@ -417,10 +438,18 @@ static inline WCHAR *ntdll_wcschr( const WCHAR *str, WCHAR ch )
     return NULL;
 }
 
-static inline WCHAR *ntdll_wcsrchr( const WCHAR *str, WCHAR ch )
+#ifdef __i386_on_x86_64__
+static inline WCHAR * HOSTPTR ntdll_wcschr( const WCHAR * HOSTPTR str, WCHAR ch ) __attribute__((overloadable))
 {
-    WCHAR *ret = NULL;
-    do { if (*str == ch) ret = (WCHAR *)(ULONG_PTR)str; } while (*str++);
+    do { if (*str == ch) return (WCHAR * HOSTPTR)(ULONGLONG)str; } while (*str++);
+    return NULL;
+}
+#endif
+
+static inline WCHAR * HOSTPTR ntdll_wcsrchr( const WCHAR * HOSTPTR str, WCHAR ch )
+{
+    WCHAR * HOSTPTR ret = NULL;
+    do { if (*str == ch) ret = (WCHAR * HOSTPTR)(ULONG_HOSTPTR)str; } while (*str++);
     return ret;
 }
 
@@ -447,7 +476,7 @@ static inline WCHAR *ntdll_wcsupr( WCHAR *str )
     return ret;
 }
 
-static inline int ntdll_wcsicmp( const WCHAR *str1, const WCHAR *str2 )
+static inline int ntdll_wcsicmp( const WCHAR * HOSTPTR str1, const WCHAR * HOSTPTR str2 )
 {
     int ret;
     for (;;)
@@ -458,7 +487,7 @@ static inline int ntdll_wcsicmp( const WCHAR *str1, const WCHAR *str2 )
     }
 }
 
-static inline int ntdll_wcsnicmp( const WCHAR *str1, const WCHAR *str2, int n )
+static inline int ntdll_wcsnicmp( const WCHAR * HOSTPTR str1, const WCHAR * HOSTPTR str2, int n )
 {
     int ret;
     for (ret = 0; n > 0; n--, str1++, str2++)
@@ -479,5 +508,13 @@ static inline int ntdll_wcsnicmp( const WCHAR *str1, const WCHAR *str2, int n )
 #define wcsupr(str)        ntdll_wcsupr(str)
 #define towupper(c)        ntdll_towupper(c)
 #define towlower(c)        ntdll_towlower(c)
+
+#ifdef __i386_on_x86_64__
+#define RtlAllocateHeap(heap,flags,size)    (pRtlAllocateHeap(heap,flags,size))
+#define RtlFreeHeap(heap,flags,ptr)         (pRtlFreeHeap(heap,flags,ptr))
+#else
+#define RtlAllocateHeap(heap,flags,size)    (((flags) & HEAP_ZERO_MEMORY) ? calloc(1,size) : malloc(size))
+#define RtlFreeHeap(heap,flags,ptr)         (free(ptr))
+#endif
 
 #endif /* __NTDLL_UNIX_PRIVATE_H */

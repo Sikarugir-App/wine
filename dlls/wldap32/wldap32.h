@@ -201,9 +201,10 @@ static inline LPSTR *strarrayWtoA( LPWSTR *strarray )
     return strarrayA;
 }
 
-static inline char **strarrayWtoU( LPWSTR *strarray )
+/* 32on64 FIXME: Is this right? */
+static inline char * HOSTPTR *strarrayWtoU( LPWSTR *strarray )
 {
-    char **strarrayU = NULL;
+    char * HOSTPTR *strarrayU = NULL;
     DWORD size;
 
     if (strarray)
@@ -212,7 +213,7 @@ static inline char **strarrayWtoU( LPWSTR *strarray )
         if ((strarrayU = heap_alloc( size )))
         {
             LPWSTR *p = strarray;
-            char **q = strarrayU;
+            char * HOSTPTR *q = strarrayU;
 
             while (*p) *q++ = strWtoU( *p++ );
             *q = NULL;
@@ -300,13 +301,39 @@ static inline struct berval *bvdup( struct berval *bv )
 
     if ((berval = heap_alloc( size )))
     {
-        char *val = (char *)berval + sizeof(struct berval);
+        char * HOSTPTR val = (char * HOSTPTR)berval + sizeof(struct berval);
 
         berval->bv_len = bv->bv_len;
         berval->bv_val = val;
         memcpy( val, bv->bv_val, bv->bv_len );
     }
     return berval;
+}
+
+static inline struct WLDAP32_berval *bvconvert_h2w( struct berval *bv )
+{
+    struct WLDAP32_berval *bvconv = NULL;
+
+    if (bv)
+    {
+        DWORD size = sizeof(struct WLDAP32_berval) + bv->bv_len;
+        if ((bvconv = heap_alloc( size )))
+        {
+            char *val = (char *)bvconv + sizeof(struct WLDAP32_berval);
+
+            bvconv->bv_len = bv->bv_len;
+            bvconv->bv_val = val;
+            memcpy( val, bv->bv_val, bv->bv_len );
+        }
+    }
+    return bvconv;
+}
+
+static inline ULONG bvconvert_and_free( ULONG ret, struct berval *bv, struct WLDAP32_berval **ptr )
+{
+    *ptr = bvconvert_h2w( bv );
+    ber_bvfree( bv );
+    return (bv && !*ptr) ? WLDAP32_LDAP_NO_MEMORY : ret;
 }
 
 static inline DWORD bvarraylen( struct berval **bv )
@@ -389,9 +416,9 @@ static inline void modfreeW( LDAPModW *mod )
 static inline void modfreeU( LDAPMod *mod )
 {
     if (mod->mod_op & LDAP_MOD_BVALUES)
-        bvarrayfree( mod->mod_vals.modv_bvals );
+        bvarrayfree( ADDRSPACECAST(void *, mod->mod_vals.modv_bvals) );
     else
-        strarrayfreeU( mod->mod_vals.modv_strvals );
+        strarrayfreeU( ADDRSPACECAST(void *, mod->mod_vals.modv_strvals) );
     heap_free( mod );
 }
 
@@ -551,7 +578,7 @@ static inline LDAPControlW *controlUtoW( LDAPControl *control )
 {
     LDAPControlW *controlW;
     DWORD len = control->ldctl_value.bv_len;
-    char *val = NULL;
+    char *val = NULL, *copy;
 
     if (control->ldctl_value.bv_val)
     {
@@ -565,7 +592,9 @@ static inline LDAPControlW *controlUtoW( LDAPControl *control )
         return NULL;
     }
 
-    controlW->ldctl_oid = strUtoW( control->ldctl_oid );
+    copy = heap_strdup(control->ldctl_oid);
+    controlW->ldctl_oid = strUtoW( copy );
+    heap_free(copy);
     controlW->ldctl_value.bv_len = len;
     controlW->ldctl_value.bv_val = val;
     controlW->ldctl_iscritical = control->ldctl_iscritical;
@@ -623,7 +652,7 @@ static inline void controlfreeU( LDAPControl *control )
 {
     if (control)
     {
-        strfreeU( control->ldctl_oid );
+        strfreeU( ADDRSPACECAST(void *, control->ldctl_oid) );
         heap_free( control->ldctl_value.bv_val );
         heap_free( control );
     }
@@ -843,8 +872,8 @@ static inline void sortkeyfreeU( LDAPSortKey *sortkey )
 {
     if (sortkey)
     {
-        strfreeU( sortkey->attributeType );
-        strfreeU( sortkey->orderingRule );
+        strfreeU( ADDRSPACECAST(void *, sortkey->attributeType) );
+        strfreeU( ADDRSPACECAST(void *, sortkey->orderingRule) );
         heap_free( sortkey );
     }
 }

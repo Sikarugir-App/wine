@@ -637,6 +637,25 @@ static void init_extensions(void)
     egl_funcs.ext.p_wglGetCurrentReadDCARB   = (void *)1;  /* never called */
     egl_funcs.ext.p_wglMakeContextCurrentARB = android_wglMakeContextCurrentARB;
 
+#if 0  /* FIXME */
+    register_extension("WGL_ARB_pbuffer");
+    egl_funcs.ext.p_wglCreatePbufferARB    = android_wglCreatePbufferARB;
+    egl_funcs.ext.p_wglDestroyPbufferARB   = android_wglDestroyPbufferARB;
+    egl_funcs.ext.p_wglGetPbufferDCARB     = android_wglGetPbufferDCARB;
+    egl_funcs.ext.p_wglQueryPbufferARB     = android_wglQueryPbufferARB;
+    egl_funcs.ext.p_wglReleasePbufferDCARB = android_wglReleasePbufferDCARB;
+    egl_funcs.ext.p_wglSetPbufferAttribARB = android_wglSetPbufferAttribARB;
+#endif
+
+#if 0  /* FIXME */
+    register_extension("WGL_ARB_pixel_format");
+    egl_funcs.ext.p_wglChoosePixelFormatARB      = android_wglChoosePixelFormatARB;
+    egl_funcs.ext.p_wglGetPixelFormatAttribfvARB = android_wglGetPixelFormatAttribfvARB;
+    egl_funcs.ext.p_wglGetPixelFormatAttribivARB = android_wglGetPixelFormatAttribivARB;
+#endif
+
+    /* EXT Extensions */
+
     register_extension("WGL_EXT_extensions_string");
     egl_funcs.ext.p_wglGetExtensionsStringEXT = android_wglGetExtensionsStringEXT;
 
@@ -981,6 +1000,12 @@ static BOOL egl_init(void)
     LOAD_FUNCPTR( eglSwapBuffers );
     LOAD_FUNCPTR( eglSwapInterval );
 #undef LOAD_FUNCPTR
+
+    /* initializing OpenGL seems to break loading of libandroid_runtime.so
+     * (dlopen failed: cannot locate symbol "glWeightPointerOES" referenced by "/system/lib/libandroid_runtime.so"...)
+     * so we preload it here */
+    if (!dlopen( "libandroid_runtime.so", RTLD_NOW|RTLD_GLOBAL ))
+        WARN( "failed to load libandroid_runtime.so: '%s'\n", dlerror() );
 
     display = p_eglGetDisplay( EGL_DEFAULT_DISPLAY );
     if (!p_eglInitialize( display, &major, &minor )) return 0;

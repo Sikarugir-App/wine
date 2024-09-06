@@ -47,6 +47,7 @@
 #define IMAGE_ROM_OPTIONAL_HDR_MAGIC  0x107
 
 int needs_get_pc_thunk = 0;
+int needs_invoke32 = 0;
 
 static const char builtin_signature[32] = "Wine builtin DLL";
 static const char fakedll_signature[32] = "Wine placeholder DLL";
@@ -99,7 +100,7 @@ static int has_relays( DLLSPEC *spec )
 {
     int i;
 
-    if (target_cpu != CPU_x86 && target_cpu != CPU_x86_64 &&
+    if (target_cpu != CPU_x86 && target_cpu != CPU_x86_64 && target_cpu != CPU_x86_32on64 &&
         target_cpu != CPU_ARM && target_cpu != CPU_ARM64)
         return 0;
 
@@ -249,6 +250,7 @@ static void output_relay_debug( DLLSPEC *spec )
     /* then the relay thunks */
 
     output( "\t.text\n" );
+    if (thumb_mode) output( "\t.thumb_func\n" );
     output( "__wine_spec_relay_entry_points:\n" );
     output( "\tnop\n" );  /* to avoid 0 offset */
 
@@ -261,10 +263,13 @@ static void output_relay_debug( DLLSPEC *spec )
         switch (target_cpu)
         {
         case CPU_x86:
+        case CPU_x86_32on64:
             output( "\t.align %d\n", get_alignment(4) );
             output( "\t.long 0x90909090,0x90909090\n" );
             output( ".L__wine_spec_relay_entry_point_%d:\n", i );
             output_cfi( ".cfi_startproc" );
+            if (target_cpu == CPU_x86_32on64)
+                output( "\t.code32\n" );
             output( "\t.byte 0x8b,0xff,0x55,0x8b,0xec,0x5d\n" );  /* hotpatch prolog */
             if (odp->flags & (FLAG_THISCALL | FLAG_FASTCALL))  /* add the register arguments */
             {
@@ -292,6 +297,8 @@ static void output_relay_debug( DLLSPEC *spec )
                 output( "\tret $%u\n", get_args_size( odp ));
             else
                 output( "\tret\n" );
+            if (target_cpu == CPU_x86_32on64)
+                output( "\t.code64\n" );
             output_cfi( ".cfi_endproc" );
             break;
 
@@ -306,6 +313,7 @@ static void output_relay_debug( DLLSPEC *spec )
 
             val = (odp->u.func.args_str_offset << 16) | (i - spec->base);
             output( "\t.align %d\n", get_alignment(4) );
+            if (thumb_mode) output( "\t.thumb_func\n" );
             output( ".L__wine_spec_relay_entry_point_%d:\n", i );
             output_cfi( ".cfi_startproc" );
             output( "\tpush {r0-r3}\n" );
@@ -317,13 +325,14 @@ static void output_relay_debug( DLLSPEC *spec )
                 if (val & mask) output( "\t%s r1,#%u\n", count++ ? "add" : "mov", val & mask );
             if (!count) output( "\tmov r1,#0\n" );
             output( "\tldr r0, 2f\n");
-            output( "\tadd r0, PC\n");
+            if (UsePIC) output( "1:\tadd r0, PC\n");
             output( "\tldr IP, [r0, #4]\n");
-            output( "1:\tblx IP\n");
+            output( "\tblx IP\n");
             output( "\tldr IP, [SP, #4]\n" );
             output( "\tadd SP, #%u\n", 24 + (has_float ? 64 : 0) );
             output( "\tbx IP\n");
-            output( "2:\t.long .L__wine_spec_relay_descr-1b\n" );
+            if (UsePIC) output( "2:\t.long .L__wine_spec_relay_descr-1b-%u\n", thumb_mode ? 4 : 8 );
+            else output( "2:\t.long .L__wine_spec_relay_descr\n" );
             output_cfi( ".cfi_endproc" );
             break;
         }
@@ -403,11 +412,12 @@ static void output_relay_debug( DLLSPEC *spec )
  */
 void output_exports( DLLSPEC *spec )
 {
-    int i, fwd_size = 0;
+    int i, hybrid_impl64s, fwd_size;
     int needs_imports = 0;
     int needs_relay = has_relays( spec );
     int nr_exports = get_exports_count( spec );
     const char *func_ptr = (target_platform == PLATFORM_WINDOWS) ? ".rva" : get_asm_ptr_keyword();
+    const char *zero_ptr = (target_platform == PLATFORM_WINDOWS) ? ".long" : get_asm_ptr_keyword();
     const char *name;
 
     if (!nr_exports) return;
@@ -440,44 +450,70 @@ void output_exports( DLLSPEC *spec )
 
     /* output the function pointers */
 
-    output( "\n.L__wine_spec_exports_funcs:\n" );
-    for (i = spec->base; i <= spec->limit; i++)
+    for (hybrid_impl64s = 0; hybrid_impl64s <= (target_cpu == CPU_x86_32on64); ++hybrid_impl64s)
     {
-        ORDDEF *odp = spec->ordinals[i];
-        if (!odp) output( "\t%s 0\n",
-                          (target_platform == PLATFORM_WINDOWS) ? ".long" : get_asm_ptr_keyword() );
-        else switch(odp->type)
+        fwd_size = 0;
+
+        if (hybrid_impl64s)
+            output( "\n.L__wine_spec_exports_impls:\n" );
+        else
+            output( "\n.L__wine_spec_exports_funcs:\n" );
+
+        for (i = spec->base; i <= spec->limit; i++)
         {
-        case TYPE_EXTERN:
-        case TYPE_STDCALL:
-        case TYPE_VARARGS:
-        case TYPE_CDECL:
-            if (odp->flags & FLAG_FORWARD)
+            ORDDEF *odp = spec->ordinals[i];
+            if (!odp) output( "\t%s 0\n", zero_ptr );
+            else switch(odp->type)
             {
-                output( "\t%s .L__wine_spec_forwards+%u\n", func_ptr, fwd_size );
-                fwd_size += strlen(odp->link_name) + 1;
+            case TYPE_EXTERN:
+            case TYPE_STDCALL:
+            case TYPE_VARARGS:
+            case TYPE_CDECL:
+                if (odp->flags & FLAG_FORWARD)
+                {
+                    output( "\t%s .L__wine_spec_forwards+%u\n", func_ptr, fwd_size );
+                    fwd_size += strlen(odp->link_name) + 1;
+                }
+                else if ((odp->flags & FLAG_IMPORT) && (target_cpu == CPU_x86 || target_cpu == CPU_x86_64 || target_cpu == CPU_x86_32on64))
+                {
+                    const char *prefix = hybrid_impl64s ? "__wine_spec_imp64" : "__wine_spec_imp";
+                    name = odp->name ? odp->name : odp->export_name;
+                    if (name) output( "\t%s %s_%s\n", func_ptr, asm_name(prefix), name );
+                    else output( "\t%s %s_%u\n", func_ptr, asm_name(prefix), i );
+                    needs_imports = 1;
+                }
+                else if (odp->flags & FLAG_EXT_LINK)
+                {
+                    output( "\t%s %s_%s\n", func_ptr, asm_name("__wine_spec_ext_link"), odp->link_name );
+                }
+                else if (odp->type == TYPE_EXTERN)
+                {
+                    if (hybrid_impl64s)
+                        output( "\t%s 0\n", zero_ptr );
+                    else
+                        output( "\t%s %s\n", func_ptr, asm_name( get_link_name( odp )));
+                }
+                else if (hybrid_impl64s)
+                {
+                    if (is_undefined( odp->link_name ))
+                        output( "\t%s 0\n", zero_ptr );
+                    else
+                        output( "\t%s %s\n", func_ptr, asm_name( get_link_name( odp )));
+                }
+                else if (target_cpu == CPU_x86_32on64)
+                    output( "\t%s %s\n", func_ptr, asm_name( thunk32_name( get_link_name( odp ))) );
+                else
+                    output( "\t%s %s\n", func_ptr, asm_name( get_link_name( odp )));
+                break;
+            case TYPE_STUB:
+                if (target_cpu == CPU_x86_32on64 && !hybrid_impl64s)
+                    output( "\t%s %s\n", func_ptr, asm_name( thunk32_name(get_stub_name( odp, spec ))) );
+                else
+                    output( "\t%s %s\n", func_ptr, asm_name( get_stub_name( odp, spec )) );
+                break;
+            default:
+                assert(0);
             }
-            else if ((odp->flags & FLAG_IMPORT) && (target_cpu == CPU_x86 || target_cpu == CPU_x86_64))
-            {
-                name = odp->name ? odp->name : odp->export_name;
-                if (name) output( "\t%s %s_%s\n", func_ptr, asm_name("__wine_spec_imp"), name );
-                else output( "\t%s %s_%u\n", func_ptr, asm_name("__wine_spec_imp"), i );
-                needs_imports = 1;
-            }
-            else if (odp->flags & FLAG_EXT_LINK)
-            {
-                output( "\t%s %s_%s\n", func_ptr, asm_name("__wine_spec_ext_link"), odp->link_name );
-            }
-            else
-            {
-                output( "\t%s %s\n", func_ptr, asm_name( get_link_name( odp )));
-            }
-            break;
-        case TYPE_STUB:
-            output( "\t%s %s\n", func_ptr, asm_name( get_stub_name( odp, spec )) );
-            break;
-        default:
-            assert(0);
         }
     }
 
@@ -571,40 +607,63 @@ void output_exports( DLLSPEC *spec )
 
     if (!needs_imports) return;
     output( "\t.text\n" );
-    for (i = spec->base; i <= spec->limit; i++)
+    for (hybrid_impl64s = 0; hybrid_impl64s <= (target_cpu == CPU_x86_32on64); ++hybrid_impl64s)
     {
-        ORDDEF *odp = spec->ordinals[i];
-        if (!odp) continue;
-        if (!(odp->flags & FLAG_IMPORT)) continue;
-
-        name = odp->name ? odp->name : odp->export_name;
-
-        output( "\t.align %d\n", get_alignment(4) );
-        output( "\t.long 0x90909090,0x90909090\n" );
-        if (name) output( "%s_%s:\n", asm_name("__wine_spec_imp"), name );
-        else output( "%s_%u:\n", asm_name("__wine_spec_imp"), i );
-        output_cfi( ".cfi_startproc" );
-
-        switch (target_cpu)
+        for (i = spec->base; i <= spec->limit; i++)
         {
-        case CPU_x86:
-            output( "\t.byte 0x8b,0xff,0x55,0x8b,0xec,0x5d\n" );  /* hotpatch prolog */
-            if (UsePIC)
+            const char *prefix = hybrid_impl64s ? "__wine_spec_imp64" : "__wine_spec_imp";
+            ORDDEF *odp = spec->ordinals[i];
+            if (!odp) continue;
+            if (!(odp->flags & FLAG_IMPORT)) continue;
+
+            name = odp->name ? odp->name : odp->export_name;
+
+            output( "\t.align %d\n", get_alignment(4) );
+            output( "\t.long 0x90909090,0x90909090\n" );
+            if (name) output( "%s_%s:\n", asm_name(prefix), name );
+            else output( "%s_%u:\n", asm_name(prefix), i );
+            output_cfi( ".cfi_startproc" );
+
+            if (hybrid_impl64s)
             {
-                output( "\tcall %s\n", asm_name("__wine_spec_get_pc_thunk_eax") );
-                output( "1:\tjmp *__imp_%s-1b(%%eax)\n", asm_name( get_link_name( odp )));
-                needs_get_pc_thunk = 1;
+                output( "\tmovq %%rbx, 8(%%rax)\n");
+                output( "\tcmpl $0, __imp64_%s(%%rip)\n", asm_name( get_link_name( odp )) );
+                output( "\tjne 1f\n" );
+                output( "\tleal %s_%s(%%rip), %%ebx\n", asm_name("__wine_spec_imp"), name );
+                output( "\txchgq %%rbx, 8(%%rax)\n");
+                output( "\tjmpq *%s(%%rip)\n", asm_name("__wine_spec_invoke32_loc") );
+                output( "\t1:\n" );
+                output( "\tmovl __imp64_%s(%%rip), %%ebx\n", asm_name( get_link_name( odp )) );
+                output( "\txchgq %%rbx, 8(%%rax)\n");
+                output( "\tjmpq *8(%%rax)\n" );
+                needs_invoke32 = 1;
             }
-            else output( "\tjmp *__imp_%s\n", asm_name( get_link_name( odp )));
-            break;
-        case CPU_x86_64:
-            output( "\t.byte 0x48,0x8d,0xa4,0x24,0x00,0x00,0x00,0x00\n" );  /* hotpatch prolog */
-            output( "\tjmp *__imp_%s(%%rip)\n", asm_name( get_link_name( odp )));
-            break;
-        default:
-            assert(0);
+            else switch (target_cpu)
+            {
+            case CPU_x86:
+            case CPU_x86_32on64:
+                if (target_cpu == CPU_x86_32on64)
+                    output( "\t.code32\n" );
+                output( "\t.byte 0x8b,0xff,0x55,0x8b,0xec,0x5d\n" );  /* hotpatch prolog */
+                if (UsePIC)
+                {
+                    output( "\tcall %s\n", asm_name("__wine_spec_get_pc_thunk_eax") );
+                    output( "1:\tjmp *__imp_%s-1b(%%eax)\n", asm_name( get_link_name( odp )));
+                    needs_get_pc_thunk = 1;
+                }
+                else output( "\tjmp *__imp_%s\n", asm_name( get_link_name( odp )));
+                if (target_cpu == CPU_x86_32on64)
+                    output( "\t.code64\n" );
+                break;
+            case CPU_x86_64:
+                output( "\t.byte 0x48,0x8d,0xa4,0x24,0x00,0x00,0x00,0x00\n" );  /* hotpatch prolog */
+                output( "\tjmp *__imp_%s(%%rip)\n", asm_name( get_link_name( odp )));
+                break;
+            default:
+                assert(0);
+            }
+            output_cfi( ".cfi_endproc" );
         }
-        output_cfi( ".cfi_endproc" );
     }
 }
 
@@ -620,6 +679,7 @@ void output_module( DLLSPEC *spec )
     int i;
     unsigned int page_size = get_page_size();
     const char *data_dirs[16] = { NULL };
+    const char *init_func;
 
     /* Reserve some space for the PE header */
 
@@ -643,6 +703,7 @@ void output_module( DLLSPEC *spec )
         {
         case CPU_x86:
         case CPU_x86_64:
+        case CPU_x86_32on64:
             output( "\n\t.section \".init\",\"ax\"\n" );
             output( "\tjmp 1f\n" );
             break;
@@ -673,6 +734,7 @@ void output_module( DLLSPEC *spec )
     output( "\t.long 0x4550\n" );         /* Signature */
     switch(target_cpu)
     {
+    case CPU_x86_32on64:
     case CPU_x86:     machine = IMAGE_FILE_MACHINE_I386; break;
     case CPU_x86_64:  machine = IMAGE_FILE_MACHINE_AMD64; break;
     case CPU_POWERPC: machine = IMAGE_FILE_MACHINE_POWERPC; break;
@@ -701,8 +763,11 @@ void output_module( DLLSPEC *spec )
         output( "\t.globl %s\n", asm_name(spec_extra_ld_symbols.str[i]) );
 
     /* note: we expand the AddressOfEntryPoint field on 64-bit by overwriting the BaseOfCode field */
+    init_func = spec->init_func;
+    if (init_func && target_cpu == CPU_x86_32on64)
+        init_func = thunk32_name( init_func );
     output( "\t%s %s\n",                  /* AddressOfEntryPoint */
-            get_asm_ptr_keyword(), spec->init_func ? asm_name(spec->init_func) : "0" );
+            get_asm_ptr_keyword(), init_func ? asm_name(init_func) : "0" );
     if (get_ptr_size() == 4)
     {
         output( "\t.long 0\n" );          /* BaseOfCode */
@@ -746,6 +811,61 @@ void output_module( DLLSPEC *spec )
 
 
 /*******************************************************************
+ *         output_invoke32
+ *
+ * Output a helper function for thunking to a 32-bit function.
+ */
+static void output_invoke32(void)
+{
+    if (target_cpu != CPU_x86_32on64) return;
+    if (target_platform == PLATFORM_WINDOWS) return;
+
+    output( "\n\t.align %d\n", get_alignment(4) );
+    output( "\t%s\n", func_declaration("__wine_spec_invoke32") );
+    output( "%s\n", asm_globl("__wine_spec_invoke32") );
+    output_cfi( ".cfi_startproc" );
+    output( "\tpopq 16(%%eax)\n" );
+    output( "\tmovq %%rbx, 24(%%eax)\n" );
+    output( "\tmovq %%rsi, 32(%%eax)\n" );
+    output( "\tmovq %%rdi, 40(%%eax)\n" );
+    output( "\tleal 1f(%%rip), %%r8d\n" );
+    if (target_platform == PLATFORM_APPLE)
+        output( "\tmovq %s@GOTPCREL(%%rip), %%r9\n", asm_name("wine_32on64_cs32") );
+    else
+        output( "\tmovq %s(%%rip), %%r9\n", asm_name("wine_32on64_cs32") ); // FIXME
+    output( "\tmovw (%%r9), %%r9w\n" );
+    output( "\tmovl %%eax, %%ebx\n" );
+    output( "\tmovl %%esp, %%esi\n" );
+    output( "\tsubl $8, %%esp\n" );
+    output( "\tmovl %%r8d, (%%esp)\n" );
+    output( "\tmovw %%r9w, 4(%%esp)\n" );
+    output( "\tlcalll *(%%esp)\n" );
+    output( "\tpushq 16(%%ebx)\n" );
+    output( "\tmovq 40(%%ebx), %%rdi\n" );
+    output( "\tmovq 32(%%ebx), %%rsi\n" );
+    output( "\tmovq 24(%%ebx), %%rbx\n" );
+    output( "\tretq\n" );
+    output( "1:\n" );
+    output( "\t.code32\n" );
+    output( "\tpopl (%%ebx)\n" );
+    output( "\tpopl 4(%%ebx)\n" );
+    output( "\taddl $20, %%esp\n" );
+    output( "\tcalll *8(%%ebx)\n" );
+    output( "\tmovl %%esi, %%esp\n" );
+    output( "\tpushl 4(%%ebx)\n" );
+    output( "\tpushl (%%ebx)\n" );
+    output( "\tlretl\n" );
+    output( "\t.code64\n" );
+    output_cfi( ".cfi_endproc" );
+
+    output( "\n\t.data\n" );
+    output( "\t.align %d\n", get_alignment(get_host_ptr_size()) );
+    output( "\t%s:\n", asm_name("__wine_spec_invoke32_loc") );
+    output( "\t%s %s\n", get_asm_host_ptr_keyword(), asm_name("__wine_spec_invoke32") );
+}
+
+
+/*******************************************************************
  *         output_spec32_file
  *
  * Build a Win32 C file from a spec file.
@@ -753,6 +873,7 @@ void output_module( DLLSPEC *spec )
 void output_spec32_file( DLLSPEC *spec )
 {
     needs_get_pc_thunk = 0;
+    needs_invoke32 = 0;
     open_output_file();
     output_standard_file_header();
     output_module( spec );
@@ -761,6 +882,7 @@ void output_spec32_file( DLLSPEC *spec )
     output_imports( spec );
     output_syscalls( spec );
     if (needs_get_pc_thunk) output_get_pc_thunk();
+    if (needs_invoke32) output_invoke32();
     output_resources( spec );
     output_gnu_stack_note();
     close_output_file();
@@ -830,6 +952,7 @@ void output_fake_module( DLLSPEC *spec )
     put_dword( 0x4550 );                             /* Signature */
     switch(target_cpu)
     {
+    case CPU_x86_32on64:
     case CPU_x86:     put_word( IMAGE_FILE_MACHINE_I386 ); break;
     case CPU_x86_64:  put_word( IMAGE_FILE_MACHINE_AMD64 ); break;
     case CPU_POWERPC: put_word( IMAGE_FILE_MACHINE_POWERPC ); break;
@@ -1026,7 +1149,7 @@ void output_def_file( DLLSPEC *spec, int import_only )
         case TYPE_STDCALL:
         {
             int at_param = get_args_size( odp );
-            if (!kill_at && target_cpu == CPU_x86) output( "@%d", at_param );
+            if (!kill_at && (target_cpu == CPU_x86 || target_cpu == CPU_x86_32on64)) output( "@%d", at_param );
             if (import_only) break;
             if  (odp->flags & FLAG_FORWARD)
                 output( "=%s", odp->link_name );
@@ -1035,7 +1158,7 @@ void output_def_file( DLLSPEC *spec, int import_only )
             break;
         }
         case TYPE_STUB:
-            if (!kill_at && target_cpu == CPU_x86) output( "@%d", get_args_size( odp ));
+            if (!kill_at && (target_cpu == CPU_x86 || target_cpu == CPU_x86_32on64)) output( "@%d", get_args_size( odp ));
             is_private = 1;
             break;
         default:

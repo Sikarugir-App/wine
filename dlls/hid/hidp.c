@@ -221,7 +221,8 @@ NTSTATUS WINAPI HidP_GetCaps(PHIDP_PREPARSED_DATA PreparsedData,
 
     TRACE("(%p, %p)\n",PreparsedData, Capabilities);
 
-    if (data->magic != HID_MAGIC)
+    /* CrossOver Hack #19103 */
+    if (!data || data->magic != HID_MAGIC)
         return HIDP_STATUS_INVALID_PREPARSED_DATA;
 
     *Capabilities = data->caps;

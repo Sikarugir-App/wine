@@ -189,7 +189,7 @@
 @ stub NtCreateToken
 @ stdcall -syscall NtCreateUserProcess(ptr ptr long long ptr ptr long long ptr ptr ptr)
 # @ stub NtCreateWaitablePort
-@ stdcall -arch=win32,arm64 NtCurrentTeb()
+@ stdcall -arch=i386,arm64 NtCurrentTeb()
 @ stdcall -syscall NtDebugActiveProcess(long long)
 # @ stub NtDebugContinue
 @ stdcall -syscall NtDelayExecution(long ptr)
@@ -1129,6 +1129,7 @@
 @ stdcall WinSqmIsOptedIn()
 @ stdcall WinSqmSetDWORD(ptr long long)
 @ stdcall WinSqmStartSession(ptr long long)
+@ extern -arch=win32 Wow64Transition
 @ stdcall -private -syscall ZwAcceptConnectPort(ptr long ptr long ptr ptr) NtAcceptConnectPort
 @ stdcall -private -syscall ZwAccessCheck(ptr long long ptr ptr ptr ptr ptr) NtAccessCheck
 @ stdcall -private -syscall ZwAccessCheckAndAuditAlarm(ptr long ptr ptr ptr long ptr long ptr ptr ptr) NtAccessCheckAndAuditAlarm
@@ -1617,6 +1618,12 @@
 @ cdecl -norelay __wine_dbg_output(str)
 @ cdecl -norelay __wine_dbg_strdup(str)
 
+# 32on64 FIXME: This won't work...
+@ cdecl -norelay -arch=x86_32on64 __wine_dbg_get_channel_flags_HOSTPTR(int64)
+@ cdecl -norelay -arch=x86_32on64 __wine_dbg_header_HOSTPTR(long int64 int64)
+@ cdecl -norelay -arch=x86_32on64 __wine_dbg_output_HOSTPTR(int64)
+@ cdecl -norelay -arch=x86_32on64 -ret64 __wine_dbg_strdup_HOSTPTR(int64)
+
 # Virtual memory
 @ cdecl -syscall __wine_locked_recvmsg(long ptr long)
 
@@ -1631,3 +1638,10 @@
 # Filesystem
 @ cdecl -syscall wine_nt_to_unix_file_name(ptr ptr ptr long)
 @ cdecl -syscall wine_unix_to_nt_file_name(str ptr ptr)
+
+# hack
+@ stdcall -syscall rpc_NtReadFile(long long ptr ptr ptr ptr long ptr ptr)
+
+# Loader
+@ cdecl -arch=i386 __wine_get_extra_proc(ptr ptr)
+@ cdecl -arch=i386 __wine_is_module_hybrid(ptr)

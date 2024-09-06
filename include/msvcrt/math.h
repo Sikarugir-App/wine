@@ -9,6 +9,8 @@
 #ifndef __WINE_MATH_H
 #define __WINE_MATH_H
 
+#include "wine/winheader_enter.h"
+
 #include <corecrt.h>
 
 #include <pshpack8.h>
@@ -96,6 +98,15 @@ _ACRTIMP float __cdecl rintf(float);
 _ACRTIMP float __cdecl roundf(float);
 _ACRTIMP float __cdecl truncf(float);
 
+#if 0
+/* 32on64 FIXME: Those are longs on the Win32/64 side, aka 32 bit
+ * integers. Ken changed it to int3264, which mingw complains about. */
+__int32 __cdecl lrint(double);
+__int32 __cdecl lrintf(float);
+__int32 __cdecl lround(double);
+__int32 __cdecl lroundf(float);
+#endif
+
 _ACRTIMP __msvcrt_long __cdecl lrint(double);
 _ACRTIMP __msvcrt_long __cdecl lrintf(float);
 _ACRTIMP __msvcrt_long __cdecl lround(double);
@@ -113,7 +124,7 @@ _ACRTIMP int    __cdecl _finite(double);
 _ACRTIMP int    __cdecl _isnan(double);
 _ACRTIMP int    __cdecl _fpclass(double);
 
-#ifndef __i386__
+#if !defined(__i386__) && !defined(__i386_on_x86_64__)
 
 _ACRTIMP float __cdecl sinf(float);
 _ACRTIMP float __cdecl cosf(float);
@@ -318,5 +329,7 @@ static inline double y1( double x ) { return _y1( x ); }
 static inline double yn( int n, double x ) { return _yn( n, x ); }
 
 static inline float hypotf( float x, float y ) { return _hypotf( x, y ); }
+
+#include "wine/winheader_exit.h"
 
 #endif /* __WINE_MATH_H */

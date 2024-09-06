@@ -50,7 +50,7 @@ RESERVED4               typename|union|unsigned|using|virtual
 WS                      [ \t]
 NEWLINE                 (\n)|(\r\n)
 DOUBLESLASHCOMMENT      "//"[^\n]*
-STRING                  \"[^\"]*\"
+HLSLSTRING              \"[^\"]*\"
 IDENTIFIER              [A-Za-z_][A-Za-z0-9_]*
 
 ANY                     (.)
@@ -244,13 +244,13 @@ row_major               {return KW_ROW_MAJOR;           }
                             hlsl_lval.intval = (atoi(yytext));
                             return PRE_LINE;
                         }
-<pp_line>{STRING}       {
+<pp_line>{HLSLSTRING}   {
                             char *string = d3dcompiler_strdup(yytext + 1);
 
                             BEGIN pp_ignore;
                             string[strlen(string) - 1] = 0;
                             hlsl_lval.name = string;
-                            return STRING;
+                            return HLSLSTRING;
                         }
 <pp_line>{WS}+          {}
 <pp_line>{NEWLINE}      {

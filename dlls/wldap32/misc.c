@@ -327,7 +327,7 @@ PWCHAR CDECL ldap_first_attributeW( WLDAP32_LDAP *ld, WLDAP32_LDAPMessage *entry
     WLDAP32_BerElement** ptr )
 {
     PWCHAR ret = NULL;
-#ifdef HAVE_LDAP
+#if defined(HAVE_LDAP) && !defined(__i386_on_x86_64__)
     char *retU;
 
     TRACE( "(%p, %p, %p)\n", ld, entry, ptr );
@@ -360,7 +360,7 @@ PWCHAR CDECL ldap_first_attributeW( WLDAP32_LDAP *ld, WLDAP32_LDAPMessage *entry
  */
 WLDAP32_LDAPMessage * CDECL WLDAP32_ldap_first_entry( WLDAP32_LDAP *ld, WLDAP32_LDAPMessage *res )
 {
-#ifdef HAVE_LDAP
+#if defined(HAVE_LDAP) && !defined(__i386_on_x86_64__)
 
     TRACE( "(%p, %p)\n", ld, res );
 
@@ -387,7 +387,7 @@ WLDAP32_LDAPMessage * CDECL WLDAP32_ldap_first_entry( WLDAP32_LDAP *ld, WLDAP32_
  */
 WLDAP32_LDAPMessage * CDECL WLDAP32_ldap_first_reference( WLDAP32_LDAP *ld, WLDAP32_LDAPMessage *res )
 {
-#ifdef HAVE_LDAP_FIRST_REFERENCE
+#if defined(HAVE_LDAP_FIRST_REFERENCE) && !defined(__i386_on_x86_64__)
 
     TRACE( "(%p, %p)\n", ld, res );
 
@@ -490,7 +490,7 @@ PWCHAR CDECL ldap_next_attributeW( WLDAP32_LDAP *ld, WLDAP32_LDAPMessage *entry,
     WLDAP32_BerElement *ptr )
 {
     PWCHAR ret = NULL;
-#ifdef HAVE_LDAP
+#if defined(HAVE_LDAP) && !defined(__i386_on_x86_64__)
     char *retU;
 
     TRACE( "(%p, %p, %p)\n", ld, entry, ptr );
@@ -523,7 +523,7 @@ PWCHAR CDECL ldap_next_attributeW( WLDAP32_LDAP *ld, WLDAP32_LDAPMessage *entry,
  */
 WLDAP32_LDAPMessage * CDECL WLDAP32_ldap_next_entry( WLDAP32_LDAP *ld, WLDAP32_LDAPMessage *entry )
 {
-#ifdef HAVE_LDAP
+#if defined(HAVE_LDAP) && !defined(__i386_on_x86_64__)
 
     TRACE( "(%p, %p)\n", ld, entry );
 
@@ -553,7 +553,7 @@ WLDAP32_LDAPMessage * CDECL WLDAP32_ldap_next_entry( WLDAP32_LDAP *ld, WLDAP32_L
  */
 WLDAP32_LDAPMessage * CDECL WLDAP32_ldap_next_reference( WLDAP32_LDAP *ld, WLDAP32_LDAPMessage *entry )
 {
-#ifdef HAVE_LDAP_NEXT_REFERENCE
+#if defined(HAVE_LDAP_NEXT_REFERENCE) && !defined(__i386_on_x86_64__)
 
     TRACE( "(%p, %p)\n", ld, entry );
 
@@ -605,7 +605,7 @@ ULONG CDECL WLDAP32_ldap_result( WLDAP32_LDAP *ld, ULONG msgid, ULONG all,
     struct l_timeval *timeout, WLDAP32_LDAPMessage **res )
 {
     ULONG ret = WLDAP32_LDAP_NOT_SUPPORTED;
-#ifdef HAVE_LDAP
+#if defined(HAVE_LDAP) && !defined(__i386_on_x86_64__)
 
     TRACE( "(%p, 0x%08x, 0x%08x, %p, %p)\n", ld, msgid, all, timeout, res );
 

@@ -96,7 +96,15 @@ void THEMING_Initialize (void)
 {
     unsigned int i;
 
-    if (!IsThemeActive()) return;
+    /* CrossOver only HACK - Theming subclassing is disabled
+     * It confuses Delphi programs (such as the DVD Pro installer) and is
+     * generally bad because it removes the A/W duality of the builtin USER
+     * classes like edit controls and list boxes. These probably need to depend
+     * on a manifest resource being present in the executable or maybe need to
+     * use hooks into user32 instead.
+     */
+
+    if (1 || !IsThemeActive()) return;
 
     atSubclassProp = GlobalAddAtomW (L"CC32ThemingSubCl");
     atRefDataProp = GlobalAddAtomW (L"CC32ThemingData");

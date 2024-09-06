@@ -2365,7 +2365,7 @@ static LONG_PTR WIN_GetWindowLong( HWND hwnd, INT offset, UINT size, BOOL unicod
                 case GWL_STYLE:      retvalue = reply->old_style; break;
                 case GWL_EXSTYLE:    retvalue = reply->old_ex_style; break;
                 case GWLP_ID:        retvalue = reply->old_id; break;
-                case GWLP_HINSTANCE: retvalue = (ULONG_PTR)wine_server_get_ptr( reply->old_instance ); break;
+                case GWLP_HINSTANCE: retvalue = TRUNCCAST(ULONG_PTR, wine_server_get_ptr( reply->old_instance )); break;
                 case GWLP_USERDATA:  retvalue = reply->old_user_data; break;
                 default:
                     if (offset >= 0) retvalue = get_win_data( &reply->old_extra_value, size );
@@ -2621,7 +2621,7 @@ LONG_PTR WIN_SetWindowLong( HWND hwnd, INT offset, UINT size, LONG_PTR newval, B
                 break;
             case GWLP_HINSTANCE:
                 wndPtr->hInstance = (HINSTANCE)newval;
-                retval = (ULONG_PTR)wine_server_get_ptr( reply->old_instance );
+                retval = TRUNCCAST(ULONG_PTR, wine_server_get_ptr( reply->old_instance ));
                 break;
             case GWLP_WNDPROC:
                 break;
@@ -2846,6 +2846,33 @@ LONG WINAPI DECLSPEC_HOTPATCH SetWindowLongW(
     LONG newval /* [in] new value of location */
 )
 {
+    if (GetVersion()&0x80000000 && offset == GWLP_WNDPROC)
+    {
+         /* CodeWeavers Only Hack... Needed for the Delegates tab 
+          * in Outlook XP running in win98 mode
+          */
+         char class[80];
+         GetClassNameA(hwnd, class, sizeof(class));
+         if (strcmp(class,"REListBox20W")==0)
+         {
+            char name[MAX_PATH], *p;
+            
+            GetModuleFileNameA(GetModuleHandleA(NULL),name,MAX_PATH);
+            p = strrchr(name, '\\');
+
+            if (p)
+                p++;
+            else
+                p = name;
+
+            if (!strcasecmp(p,"OUTLOOK.EXE"))
+            {
+                ERR("Outlook in WIN98 calling supposedly unimplemented function, triggering bandaid for class %s\n",debugstr_a(class));
+                SetLastError(ERROR_CALL_NOT_IMPLEMENTED);
+                return 0;
+            }
+         }
+    }
     switch (offset)
     {
 #ifdef _WIN64
@@ -4004,6 +4031,25 @@ BOOL WINAPI UpdateLayeredWindowIndirect( HWND hwnd, const UPDATELAYEREDWINDOWINF
     if (!USER_Driver->pUpdateLayeredWindow( hwnd, info, &window_rect )) return FALSE;
 
     set_window_pos( hwnd, 0, flags, &window_rect, &client_rect, NULL );
+
+    /*
+     * CrossOver hack:
+     * Hide non-working, semi-transparent window in Quicken 2012.
+     * for bug 8982.
+     */
+    if(1) {
+        static const WCHAR QWinLightbox[] = {'Q','W','i','n','L','i','g','h','t','b','o','x',0};
+        WCHAR window_class[sizeof(QWinLightbox)/sizeof(WCHAR)];
+
+        if(GetClassNameW(hwnd, window_class, sizeof(QWinLightbox)/sizeof(WCHAR))
+                && !memcmp(QWinLightbox, window_class, sizeof(QWinLightbox))) {
+            FIXME("Hide semi-transparent window that is created over application window.\n");
+            SetWindowPos(hwnd, HWND_BOTTOM, 0, 0, 0, 0,
+                    SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOREDRAW | SWP_NOSENDCHANGING);
+        }
+    }
+
+
     return TRUE;
 }
 

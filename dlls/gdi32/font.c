@@ -741,6 +741,47 @@ static void load_gdi_font_replacements(void)
     DWORD i = 0, type, dlen, vlen;
     WCHAR value[LF_FACESIZE], data[1024];
 
+/* CROSSOVER HACK - bug 13095 and 13610 */
+    static const WCHAR SongTi[] = {0x5b8b,0x4f53,0};
+    static const WCHAR atSongTi[] = {'@',0x5b8b,0x4f53,0};
+    static const WCHAR XinSongTi[] = {0x65B0,0x5b8b,0x4f53,0};
+    static const WCHAR atXinSongTi[] = {'@',0x65B0,0x5b8b,0x4f53,0};
+    static const WCHAR *cn_font_replacement[] = {
+        L"SimSun",
+        L"NSimSun",
+        SongTi,
+        XinSongTi,
+        L"@SimSun",
+        L"@NSimSun",
+        atSongTi,
+        atXinSongTi
+    };
+    BOOL cn_font_seen[ARRAY_SIZE(cn_font_replacement)] = {FALSE};
+    static const WCHAR new_cn_font[] =
+        L"Hiragino Sans GB W3\0"
+        L"STSong\0"
+        /* Noto Sans CJK SC Regular - default Simplified Chinese font for Ubuntu 16.04 or later */
+        L"Noto Sans CJK SC Regular\0"
+        /* Source Han Sans CN - Fedora's default Simplified Chinese font */
+        L"Source Han Sans CN Regular\0"
+        /* WenQuanYi Micro Hei - popular open source Simplified Chinese font */
+        L"WenQuanYi Micro Hei\0"
+        /* Droid Sans Fallback - Ubuntu's default Simplified Chinese font */
+        L"Droid Sans Fallback\0";
+    static const WCHAR vertical_new_cn_font[] =
+        L"@Hiragino Sans GB W3\0"
+        L"@STSong\0"
+        /* Noto Sans CJK SC Regular - default Simplified Chinese font for Ubuntu 16.04 or later */
+        L"@Noto Sans CJK SC Regular\0"
+        /* Source Han Sans CN - Fedora's default Simplified Chinese font */
+        L"@Source Han Sans CN Regular\0"
+        /* WenQuanYi Micro Hei - popular open source Simplified Chinese font */
+        L"@WenQuanYi Micro Hei\0"
+        /* Droid Sans Fallback - Ubuntu's default Simplified Chinese font */
+        L"@Droid Sans Fallback\0";
+
+    if (getenv( "CX_TURN_OFF_FONT_REPLACEMENTS" )) return;
+
     /* @@ Wine registry key: HKCU\Software\Wine\Fonts\Replacements */
     if (RegOpenKeyW( wine_fonts_key, L"Replacements", &hkey )) return;
 
@@ -751,9 +792,28 @@ static void load_gdi_font_replacements(void)
         /* "NewName"="Oldname" */
         if (!find_family_from_any_name( value ))
         {
+            const WCHAR *replace = data;
+
+            /* CROSSOVER HACK - bug 13095 and 13610 */
+            int j;
+            for (j = 0; j < ARRAY_SIZE(cn_font_replacement); j++)
+            {
+                if (!cn_font_seen[j] && !lstrcmpW(value, cn_font_replacement[j]))
+                {
+                    BOOL is_vertical = value[0] == '@';
+                    if (type == REG_SZ && !lstrcmpW(data, is_vertical ? L"@STSong" : L"STSong"))
+                    {
+                        if (is_vertical) replace = vertical_new_cn_font;
+                        else replace = new_cn_font;
+                        type = REG_MULTI_SZ;
+                    }
+                    cn_font_seen[j] = TRUE;
+                    break;
+                }
+            }
+
             if (type == REG_MULTI_SZ)
             {
-                WCHAR *replace = data;
                 while (*replace)
                 {
                     if (add_family_replacement( value, replace )) break;
@@ -768,6 +828,26 @@ static void load_gdi_font_replacements(void)
         dlen = sizeof(data);
         vlen = ARRAY_SIZE(value);
     }
+
+    /* CROSSOVER HACK - bug 13095 and 13610 */
+    for (i = 0; i < ARRAY_SIZE(cn_font_replacement); i++)
+    {
+        if (!cn_font_seen[i] && !find_family_from_any_name(cn_font_replacement[i]))
+        {
+            const WCHAR *replace;
+            if (cn_font_replacement[i][0] == '@')
+                replace = vertical_new_cn_font;
+            else
+                replace = new_cn_font;
+            while (*replace)
+            {
+                if (add_family_replacement(cn_font_replacement[i], replace))
+                    break;
+                replace += lstrlenW(replace) + 1;
+            }
+        }
+    }
+
     RegCloseKey( hkey );
 }
 
@@ -3379,16 +3459,17 @@ static UINT CDECL font_GetOutlineTextMetrics( PHYSDEV dev, UINT size, OUTLINETEX
         {
             WCHAR *ptr = (WCHAR *)(metrics + 1);
             *metrics = physdev->font->otm;
-            metrics->otmpFamilyName = (char *)ptr - (ULONG_PTR)metrics;
+            /* 32on64 FIXME: Are the TRUNCCASTs right here? */
+            metrics->otmpFamilyName = TRUNCCAST(LPSTR, (char *)ptr - (ULONG_PTR)metrics);
             lstrcpyW( ptr, (WCHAR *)physdev->font->otm.otmpFamilyName );
             ptr += lstrlenW(ptr) + 1;
-            metrics->otmpStyleName = (char *)ptr - (ULONG_PTR)metrics;
+            metrics->otmpStyleName = TRUNCCAST(LPSTR, (char *)ptr - (ULONG_PTR)metrics);
             lstrcpyW( ptr, (WCHAR *)physdev->font->otm.otmpStyleName );
             ptr += lstrlenW(ptr) + 1;
-            metrics->otmpFaceName = (char *)ptr - (ULONG_PTR)metrics;
+            metrics->otmpFaceName = TRUNCCAST(LPSTR, (char *)ptr - (ULONG_PTR)metrics);
             lstrcpyW( ptr, (WCHAR *)physdev->font->otm.otmpFaceName );
             ptr += lstrlenW(ptr) + 1;
-            metrics->otmpFullName = (char *)ptr - (ULONG_PTR)metrics;
+            metrics->otmpFullName = TRUNCCAST(LPSTR, (char *)ptr - (ULONG_PTR)metrics);
             lstrcpyW( ptr, (WCHAR *)physdev->font->otm.otmpFullName );
             scale_outline_font_metrics( physdev->font, metrics );
         }
@@ -5264,7 +5345,7 @@ UINT WINAPI GetOutlineTextMetricsA(
     left = needed - sizeof(*output);
 
     if(lpOTMW->otmpFamilyName) {
-        output->otmpFamilyName = (LPSTR)(ptr - (char*)output);
+        output->otmpFamilyName = TRUNCCAST(LPSTR, ptr - (char*)output);
 	len = WideCharToMultiByte(CP_ACP, 0,
 	     (WCHAR*)((char*)lpOTMW + (ptrdiff_t)lpOTMW->otmpFamilyName), -1,
 				  ptr, left, NULL, NULL);
@@ -5274,7 +5355,7 @@ UINT WINAPI GetOutlineTextMetricsA(
         output->otmpFamilyName = 0;
 
     if(lpOTMW->otmpFaceName) {
-        output->otmpFaceName = (LPSTR)(ptr - (char*)output);
+        output->otmpFaceName = TRUNCCAST(LPSTR, ptr - (char*)output);
 	len = WideCharToMultiByte(CP_ACP, 0,
 	     (WCHAR*)((char*)lpOTMW + (ptrdiff_t)lpOTMW->otmpFaceName), -1,
 				  ptr, left, NULL, NULL);
@@ -5284,7 +5365,7 @@ UINT WINAPI GetOutlineTextMetricsA(
         output->otmpFaceName = 0;
 
     if(lpOTMW->otmpStyleName) {
-        output->otmpStyleName = (LPSTR)(ptr - (char*)output);
+        output->otmpStyleName = TRUNCCAST(LPSTR, ptr - (char*)output);
 	len = WideCharToMultiByte(CP_ACP, 0,
 	     (WCHAR*)((char*)lpOTMW + (ptrdiff_t)lpOTMW->otmpStyleName), -1,
 				  ptr, left, NULL, NULL);
@@ -5294,7 +5375,7 @@ UINT WINAPI GetOutlineTextMetricsA(
         output->otmpStyleName = 0;
 
     if(lpOTMW->otmpFullName) {
-        output->otmpFullName = (LPSTR)(ptr - (char*)output);
+        output->otmpFullName = TRUNCCAST(LPSTR, ptr - (char*)output);
 	len = WideCharToMultiByte(CP_ACP, 0,
 	     (WCHAR*)((char*)lpOTMW + (ptrdiff_t)lpOTMW->otmpFullName), -1,
 				  ptr, left, NULL, NULL);
@@ -5823,14 +5904,16 @@ BOOL WINAPI ExtTextOutA( HDC hdc, INT x, INT y, UINT flags,
     LPWSTR p;
     BOOL ret;
     LPINT lpDxW = NULL;
+    unsigned int i;
 
     if (flags & ETO_GLYPH_INDEX)
         return ExtTextOutW( hdc, x, y, flags, lprect, (LPCWSTR)str, count, lpDx );
 
-    p = FONT_mbtowc(hdc, str, count, &wlen, &codepage);
+    if(GetObjectType(hdc) != OBJ_METADC) {
+        p = FONT_mbtowc(hdc, str, count, &wlen, &codepage);
 
-    if (lpDx) {
-        unsigned int i = 0, j = 0;
+        if (lpDx) {
+            unsigned int i = 0, j = 0;
 
         /* allocate enough for a ETO_PDY */
         lpDxW = HeapAlloc( GetProcessHeap(), 0, 2*wlen*sizeof(INT));
@@ -5857,6 +5940,18 @@ BOOL WINAPI ExtTextOutA( HDC hdc, INT x, INT y, UINT flags,
                     lpDxW[j++] = lpDx[i];
                 i = i + 1;
             }
+        }
+        }
+    } else { /* Special case for metafiles.  Just do a straight copy */
+        p = HeapAlloc(GetProcessHeap(), 0, (count + 1) * sizeof(WCHAR));
+	for(i = 0; i < count; i++)
+            p[i] = (BYTE)str[i];
+        p[count] = '\0';
+        wlen = count;
+        if(lpDx) {
+            lpDxW = HeapAlloc(GetProcessHeap(), 0, count * sizeof(INT));
+            for(i = 0; i < count; i++)
+                lpDxW[i] = lpDx[i];
         }
     }
 
@@ -7793,6 +7888,10 @@ static void load_file_system_fonts(void)
     /* Wine data directory */
     get_fonts_data_dir_path( L"*", path );
     load_directory_fonts( path, ADDFONT_EXTERNAL_FONT );
+
+    /* custom Wine font dir for Android */
+    lstrcpyW( path, L"c:\\fonts\\wine\\*" );
+    load_directory_fonts( path, ADDFONT_ADD_TO_CACHE | ADDFONT_EXTERNAL_FONT );
 
     /* custom paths */
     /* @@ Wine registry key: HKCU\Software\Wine\Fonts */

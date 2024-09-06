@@ -88,6 +88,7 @@
 #include "wine/server.h"
 #include "wine/debug.h"
 #include "unix_private.h"
+#include "esync.h"
 #include "ddk/wdm.h"
 
 WINE_DEFAULT_DEBUG_CHANNEL(server);
@@ -99,9 +100,8 @@ WINE_DEFAULT_DEBUG_CHANNEL(server);
 #define SOCKETNAME "socket"        /* name of the socket file */
 #define LOCKNAME   "lock"          /* name of the lock file */
 
-static const BOOL is_win64 = (sizeof(void *) > sizeof(int));
 
-static const char *server_dir;
+static const char * HOSTPTR server_dir;
 
 unsigned int server_cpus = 0;
 BOOL is_wow64 = FALSE;
@@ -112,9 +112,32 @@ timeout_t server_start_time = 0;  /* time of server startup */
 sigset_t server_block_set;  /* signals to block during server calls */
 static int fd_socket = -1;  /* socket to exchange file descriptors with the server */
 static pid_t server_pid;
-static pthread_mutex_t fd_cache_mutex = PTHREAD_MUTEX_INITIALIZER;
+pthread_mutex_t fd_cache_mutex = PTHREAD_MUTEX_INITIALIZER;
+
 
 /* atomically exchange a 64-bit value */
+#ifdef __i386_on_x86_64__
+#include <wine/hostaddrspace_enter.h>
+#ifdef __GCC_HAVE_SYNC_COMPARE_AND_SWAP_8
+static inline __int64 interlocked_cmpxchg64( __int64 *dest, __int64 xchg, __int64 compare )
+{
+    return __sync_val_compare_and_swap( dest, compare, xchg );
+}
+#endif
+
+static inline LONG64 interlocked_xchg64( LONG64 * HOSTPTR dest, LONG64 val )
+{
+#ifdef _WIN64
+    return (LONG64)interlocked_xchg_ptr( (void **)dest, (void *)val );
+#else
+    LONG64 tmp = *dest;
+    while (interlocked_cmpxchg64( dest, val, tmp ) != tmp) tmp = *dest;
+    return tmp;
+#endif
+}
+#include <wine/hostaddrspace_exit.h>
+#else
+#define interlocked_cmpxchg64(dest,xchg,compare) InterlockedCompareExchange64(dest,xchg,compare)
 static inline LONG64 interlocked_xchg64( LONG64 *dest, LONG64 val )
 {
 #ifdef _WIN64
@@ -125,11 +148,12 @@ static inline LONG64 interlocked_xchg64( LONG64 *dest, LONG64 val )
     return tmp;
 #endif
 }
+#endif
 
 #ifdef __GNUC__
 static void fatal_error( const char *err, ... ) __attribute__((noreturn, format(printf,1,2)));
 static void fatal_perror( const char *err, ... ) __attribute__((noreturn, format(printf,1,2)));
-static void server_connect_error( const char *serverdir ) __attribute__((noreturn));
+static void server_connect_error( const char * HOSTPTR serverdir ) __attribute__((noreturn));
 #endif
 
 /* die on a fatal error; use only during initialization */
@@ -207,7 +231,7 @@ static unsigned int send_request( const struct __server_request_info *req )
         vec[0].iov_len = sizeof(req->u.req);
         for (i = 0; i < req->data_count; i++)
         {
-            vec[i+1].iov_base = (void *)req->data[i].ptr;
+            vec[i+1].iov_base = req->data[i].ptr ? (void *)req->data[i].ptr : (void * HOSTPTR)req->data[i].hostptr ;
             vec[i+1].iov_len = req->data[i].size;
         }
         if ((ret = writev( ntdll_get_thread_data()->request_fd, vec, i+1 )) ==
@@ -226,7 +250,7 @@ static unsigned int send_request( const struct __server_request_info *req )
  *
  * Read data from the reply buffer; helper for wait_reply.
  */
-static void read_reply_data( void *buffer, size_t size )
+static void read_reply_data( void * HOSTPTR buffer, size_t size )
 {
     int ret;
 
@@ -235,7 +259,7 @@ static void read_reply_data( void *buffer, size_t size )
         if ((ret = read( ntdll_get_thread_data()->reply_fd, buffer, size )) > 0)
         {
             if (!(size -= ret)) return;
-            buffer = (char *)buffer + ret;
+            buffer = (char * HOSTPTR)buffer + ret;
             continue;
         }
         if (!ret) break;
@@ -257,7 +281,7 @@ static inline unsigned int wait_reply( struct __server_request_info *req )
 {
     read_reply_data( &req->u.reply, sizeof(req->u.reply) );
     if (req->u.reply.reply_header.reply_size)
-        read_reply_data( req->reply_data, req->u.reply.reply_header.reply_size );
+        read_reply_data( req->reply_data ? req->reply_data : (void * HOSTPTR)req->reply_data_hostptr, req->u.reply.reply_header.reply_size );
     return req->u.reply.reply_header.error;
 }
 
@@ -721,9 +745,15 @@ NTSTATUS WINAPI NtContinue( CONTEXT *context, BOOLEAN alertable )
     user_apc_t apc;
     NTSTATUS status;
 
-    status = server_select( NULL, 0, SELECT_INTERRUPTIBLE | SELECT_ALERTABLE, 0, NULL, NULL, &apc );
-    if (status == STATUS_USER_APC) invoke_apc( context, &apc );
-    return NtSetContextThread( GetCurrentThread(), context );
+    if (alertable)
+    {
+        status = server_select( NULL, 0, SELECT_INTERRUPTIBLE | SELECT_ALERTABLE, 0, NULL, NULL, &apc );
+        if (status == STATUS_USER_APC) invoke_apc( context, &apc );
+    }
+    status = NtSetContextThread( GetCurrentThread(), context );
+    if (!status && (context->ContextFlags & CONTEXT_INTEGER) == CONTEXT_INTEGER)
+        signal_restore_full_cpu_context();
+    return status;
 }
 
 
@@ -772,6 +802,7 @@ unsigned int server_queue_process_apc( HANDLE process, const apc_call_t *call, a
     }
 }
 
+#include "wine/hostptraddrspace_enter.h"
 
 /***********************************************************************
  *           wine_server_send_fd
@@ -829,7 +860,7 @@ void CDECL wine_server_send_fd( int fd )
  *
  * Receive a file descriptor passed from the server.
  */
-static int receive_fd( obj_handle_t *handle )
+int receive_fd( obj_handle_t *handle )
 {
     struct iovec vec;
     struct msghdr msghdr;
@@ -883,6 +914,7 @@ static int receive_fd( obj_handle_t *handle )
     abort_thread(0);
 }
 
+#include "wine/hostptraddrspace_exit.h"
 
 /***********************************************************************/
 /* fd cache support */
@@ -904,7 +936,7 @@ C_ASSERT( sizeof(union fd_cache_entry) == sizeof(LONG64) );
 #define FD_CACHE_BLOCK_SIZE  (65536 / sizeof(union fd_cache_entry))
 #define FD_CACHE_ENTRIES     128
 
-static union fd_cache_entry *fd_cache[FD_CACHE_ENTRIES];
+static union fd_cache_entry * HOSTPTR fd_cache[FD_CACHE_ENTRIES];
 static union fd_cache_entry fd_cache_initial_block[FD_CACHE_BLOCK_SIZE];
 
 static inline unsigned int handle_to_index( HANDLE handle, unsigned int *entry )
@@ -937,9 +969,9 @@ static BOOL add_fd_to_cache( HANDLE handle, int fd, enum server_fd_type type,
         if (!entry) fd_cache[0] = fd_cache_initial_block;
         else
         {
-            void *ptr = anon_mmap_alloc( FD_CACHE_BLOCK_SIZE * sizeof(union fd_cache_entry),
+            void * HOSTPTR ptr = anon_mmap_alloc( FD_CACHE_BLOCK_SIZE * sizeof(union fd_cache_entry),
                                          PROT_READ | PROT_WRITE );
-            if (ptr == MAP_FAILED) return FALSE;
+            if (ptr == MAP_FAILED_HOSTPTR) return FALSE;
             fd_cache[entry] = ptr;
         }
     }
@@ -966,7 +998,7 @@ static inline NTSTATUS get_cached_fd( HANDLE handle, int *fd, enum server_fd_typ
 
     if (entry >= FD_CACHE_ENTRIES || !fd_cache[entry]) return STATUS_INVALID_HANDLE;
 
-    cache.data = InterlockedCompareExchange64( &fd_cache[entry][idx].data, 0, 0 );
+    cache.data = interlocked_cmpxchg64( &fd_cache[entry][idx].data, 0, 0 );
     if (!cache.data) return STATUS_INVALID_HANDLE;
 
     /* if fd type is invalid, fd stores an error value */
@@ -1139,9 +1171,9 @@ int server_pipe( int fd[2] )
 /***********************************************************************
  *           init_server_dir
  */
-static const char *init_server_dir( dev_t dev, ino_t ino )
+static const char * HOSTPTR init_server_dir( dev_t dev, ino_t ino )
 {
-    char *p, *dir;
+    char * HOSTPTR p, * HOSTPTR dir;
     size_t len = sizeof("/server-") + 2 * sizeof(dev) + 2 * sizeof(ino) + 2;
 
 #ifdef __ANDROID__  /* there's no /tmp dir on Android */
@@ -1175,7 +1207,7 @@ static const char *init_server_dir( dev_t dev, ino_t ino )
  */
 static int setup_config_dir(void)
 {
-    char *p;
+    char * HOSTPTR p;
     struct stat st;
     int fd_cwd = open( ".", O_RDONLY );
 
@@ -1221,7 +1253,7 @@ static int setup_config_dir(void)
  * Try to display a meaningful explanation of why we couldn't connect
  * to the server.
  */
-static void server_connect_error( const char *serverdir )
+static void server_connect_error( const char * HOSTPTR serverdir )
 {
     int fd;
     struct flock fl;
@@ -1417,7 +1449,7 @@ static int get_unix_tid(void)
 void server_init_process(void)
 {
     obj_handle_t version;
-    const char *env_socket = getenv( "WINESERVERSOCKET" );
+    const char * HOSTPTR env_socket = getenv( "WINESERVERSOCKET" );
 
     server_pid = -1;
     if (env_socket)
@@ -1429,7 +1461,7 @@ void server_init_process(void)
     }
     else
     {
-        const char *arch = getenv( "WINEARCH" );
+        const char * HOSTPTR arch = getenv( "WINEARCH" );
 
         if (arch && strcmp( arch, "win32" ) && strcmp( arch, "win64" ))
             fatal_error( "WINEARCH set to invalid value '%s', it must be either win32 or win64.\n", arch );
@@ -1472,6 +1504,82 @@ void server_init_process(void)
 #endif
 }
 
+/* CROSSOVER HACK: bug 17634 */
+NTSTATUS open_hkcu_key( const char *path, HANDLE *key )
+{
+    NTSTATUS status;
+    char buffer[256];
+    WCHAR bufferW[256];
+    DWORD_PTR sid_data[(sizeof(TOKEN_USER) + SECURITY_MAX_SID_SIZE) / sizeof(DWORD_PTR)];
+    DWORD i, len = sizeof(sid_data);
+    SID *sid;
+    UNICODE_STRING name;
+    OBJECT_ATTRIBUTES attr;
+
+    status = NtQueryInformationToken( GetCurrentThreadEffectiveToken(), TokenUser, sid_data, len, &len );
+    if (status) return status;
+
+    sid = ((TOKEN_USER *)sid_data)->User.Sid;
+    len = sprintf( buffer, "\\Registry\\User\\S-%u-%u", sid->Revision,
+                 MAKELONG( MAKEWORD( sid->IdentifierAuthority.Value[5], sid->IdentifierAuthority.Value[4] ),
+                           MAKEWORD( sid->IdentifierAuthority.Value[3], sid->IdentifierAuthority.Value[2] )));
+    for (i = 0; i < sid->SubAuthorityCount; i++)
+        len += sprintf( buffer + len, "-%u", sid->SubAuthority[i] );
+    len += sprintf( buffer + len, "\\%s", path );
+
+    ascii_to_unicode( bufferW, buffer, len + 1 );
+    name.Length = wcslen( bufferW ) * sizeof(WCHAR);
+    name.Buffer = bufferW;
+    InitializeObjectAttributes( &attr, &name, OBJ_CASE_INSENSITIVE, 0, NULL );
+    return NtCreateKey( key, KEY_ALL_ACCESS, &attr, 0, NULL, 0, NULL );
+}
+
+static BOOL force_laa(const WCHAR * HOSTPTR app_name)
+{
+    static const WCHAR LargeAddressAwareW[] = {'L','a','r','g','e','A','d','d','r','e','s','s','A','w','a','r','e',0};
+    const char * HOSTPTR e = getenv("WINE_LARGE_ADDRESS_AWARE");
+    UNICODE_STRING nameW, valuenameW;
+    HANDLE root, app_key = 0;
+    OBJECT_ATTRIBUTES attr;
+    char tmp[64];
+    KEY_VALUE_PARTIAL_INFORMATION *info = (KEY_VALUE_PARTIAL_INFORMATION *)tmp;
+    DWORD count;
+    BOOL result=FALSE;
+
+    if ((e != NULL) && (*e != '\0' && *e != '0'))
+        return TRUE;
+
+    if (!open_hkcu_key( "Software\\Wine\\AppDefaults", &root ))
+    {
+        ULONG len = wcslen( app_name ) + 1;
+        nameW.Length = (len - 1) * sizeof(WCHAR);
+        nameW.Buffer = RtlAllocateHeap( GetProcessHeap(), 0, len * sizeof(WCHAR) );
+        wcscpy( nameW.Buffer, app_name );
+        InitializeObjectAttributes( &attr, &nameW, 0, root, NULL );
+
+        /* @@ Wine registry key: HKCU\Software\Wine\AppDefaults\app.exe */
+        NtOpenKey( &app_key, KEY_ALL_ACCESS, &attr );
+        NtClose( root );
+        RtlFreeHeap( GetProcessHeap(), 0, nameW.Buffer );
+    }
+
+    if (app_key)
+    {
+        valuenameW.Length = sizeof(LargeAddressAwareW) - sizeof(WCHAR);
+        valuenameW.Buffer = (WCHAR*)LargeAddressAwareW;
+        if (!NtQueryValueKey( app_key, &valuenameW, KeyValuePartialInformation, tmp, sizeof(tmp)-1, &count))
+        {
+            if (info->DataLength >= sizeof(DWORD))
+            {
+                if ((*(DWORD *)info->Data) != 0)
+                    result = TRUE;
+            }
+        }
+        NtClose( app_key );
+    }
+
+    return result;
+}
 
 /***********************************************************************
  *           server_init_process_done
@@ -1483,6 +1591,7 @@ void server_init_process_done(void)
     void *entry = (char *)peb->ImageBaseAddress + nt->OptionalHeader.AddressOfEntryPoint;
     NTSTATUS status;
     int suspend, needs_close, unixdir;
+    const WCHAR * HOSTPTR exename;
 
     if (peb->ProcessParameters->CurrentDirectory.Handle &&
         !server_get_unix_fd( peb->ProcessParameters->CurrentDirectory.Handle,
@@ -1493,10 +1602,41 @@ void server_init_process_done(void)
     }
     else chdir( "/" ); /* avoid locking removable devices */
 
+    if ((exename = ntdll_wcsrchr( main_wargv[0], '\\' ))) exename++;
+    else exename = main_wargv[0];
+
+    /* CROSSOVER HACK: bug 3853 */
+    {
+        static const WCHAR explorerexeW[] = {'e','x','p','l','o','r','e','r','.','e','x','e',0};
+        const char * HOSTPTR child_pipe = getenv("WINE_WAIT_CHILD_PIPE");
+        const char * HOSTPTR ignore_child = getenv("WINE_WAIT_CHILD_PIPE_IGNORE");
+        if (child_pipe)
+        {
+            if (!ntdll_wcsicmp( exename, explorerexeW ))
+            {
+                int fd = atoi(child_pipe);
+                if (fd) close( fd );
+                unsetenv("WINE_WAIT_CHILD_PIPE");
+            }
+            else if (ignore_child)
+            {
+                WCHAR ignore[MAX_PATH];
+                ntdll_umbstowcs( ignore_child, strlen(ignore_child) + 1, ignore, MAX_PATH );
+                if (!ntdll_wcsicmp( exename, ignore ))
+                {
+                    int fd = atoi(child_pipe);
+                    if (fd) close( fd );
+                    unsetenv("WINE_WAIT_CHILD_PIPE");
+                }
+            }
+        }
+    }
+
 #ifdef __APPLE__
     send_server_task_port();
 #endif
-    if (nt->FileHeader.Characteristics & IMAGE_FILE_LARGE_ADDRESS_AWARE) virtual_set_large_address_space();
+    if (nt->FileHeader.Characteristics & IMAGE_FILE_LARGE_ADDRESS_AWARE || force_laa(exename))
+        virtual_set_large_address_space();
 
     /* Install signal handlers; this cannot be done earlier, since we cannot
      * send exceptions to the debugger before the create process event that
@@ -1507,7 +1647,7 @@ void server_init_process_done(void)
     SERVER_START_REQ( init_process_done )
     {
         req->module   = wine_server_client_ptr( peb->ImageBaseAddress );
-#ifdef __i386__
+#if defined(__i386__) || defined(__i386_on_x86_64__)
         req->ldt_copy = wine_server_client_ptr( &__wine_ldt_copy );
 #endif
         req->entry    = wine_server_client_ptr( entry );
@@ -1530,7 +1670,7 @@ void server_init_process_done(void)
 size_t server_init_thread( void *entry_point, BOOL *suspend )
 {
     static const char *cpu_names[] = { "x86", "x86_64", "PowerPC", "ARM", "ARM64" };
-    const char *arch = getenv( "WINEARCH" );
+    const char * HOSTPTR arch = getenv( "WINEARCH" );
     int ret;
     int reply_pipe[2];
     struct sigaction sig_act;
@@ -1594,9 +1734,9 @@ size_t server_init_thread( void *entry_point, BOOL *suspend )
     case STATUS_SUCCESS:
         if (arch)
         {
-            if (!strcmp( arch, "win32" ) && (is_win64 || is_wow64))
+            if (!strcmp( arch, "win32" ) && (wine_is_64bit() || is_wow64))
                 fatal_error( "WINEARCH set to win32 but '%s' is a 64-bit installation.\n", config_dir );
-            if (!strcmp( arch, "win64" ) && !is_win64 && !is_wow64)
+            if (!strcmp( arch, "win64" ) && !wine_is_64bit() && !is_wow64)
                 fatal_error( "WINEARCH set to win64 but '%s' is a 32-bit installation.\n", config_dir );
         }
         return info_size;
@@ -1668,6 +1808,9 @@ NTSTATUS WINAPI NtClose( HANDLE handle )
     HANDLE port;
     NTSTATUS ret;
     int fd = remove_fd_from_cache( handle );
+
+    if (do_esync())
+        esync_close( handle );
 
     SERVER_START_REQ( close_handle )
     {

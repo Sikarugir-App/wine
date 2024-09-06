@@ -102,6 +102,7 @@ extern void set_fd_signaled( struct fd *fd, int signaled );
 extern char *dup_fd_name( struct fd *root, const char *name );
 
 extern int default_fd_signaled( struct object *obj, struct wait_queue_entry *entry );
+extern struct esync_fd *default_fd_get_esync_fd( struct object *obj, enum esync_type *type );
 extern unsigned int default_fd_map_access( struct object *obj, unsigned int access );
 extern int default_fd_get_poll_events( struct fd *fd );
 extern void default_poll_event( struct fd *fd, int event );
@@ -166,6 +167,10 @@ extern int is_file_executable( const char *name );
 
 /* file mapping functions */
 
+extern struct mapping *create_mapping( struct object *root, const struct unicode_str *name,
+                                       unsigned int attr, mem_size_t size, unsigned int flags,
+                                       obj_handle_t handle, unsigned int file_access,
+                                       const struct security_descriptor *sd );
 extern struct file *get_mapping_file( struct process *process, client_ptr_t base,
                                       unsigned int access, unsigned int sharing );
 extern const pe_image_info_t *get_mapping_image_info( struct process *process, client_ptr_t base );

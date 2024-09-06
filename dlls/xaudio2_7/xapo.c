@@ -107,7 +107,7 @@ static HRESULT WINAPI XAPOFX_GetRegistrationProperties(IXAPO *iface,
         return hr;
 
     /* TODO: check for version == 20 and use XAPO20_REGISTRATION_PROPERTIES */
-    *props = (XAPO_REGISTRATION_PROPERTIES*) fprops;
+    *props = ADDRSPACECAST(XAPO_REGISTRATION_PROPERTIES *, fprops);
     return hr;
 }
 
@@ -116,11 +116,17 @@ static HRESULT WINAPI XAPOFX_IsInputFormatSupported(IXAPO *iface,
         WAVEFORMATEX **supported_fmt)
 {
     XA2XAPOFXImpl *This = impl_from_IXAPO(iface);
+    FAudioWaveFormatEx *supported_fa_fmt;
+    HRESULT hr;
+
     TRACE("%p, %p, %p, %p\n", This, output_fmt, input_fmt, supported_fmt);
-    return This->fapo->IsInputFormatSupported(This->fapo,
+    hr = This->fapo->IsInputFormatSupported(This->fapo,
             (const FAudioWaveFormatEx *)output_fmt,
             (const FAudioWaveFormatEx *)input_fmt,
-            (FAudioWaveFormatEx **)supported_fmt);
+            supported_fmt ? &supported_fa_fmt : NULL);
+    if (supported_fmt)
+        *supported_fmt = ADDRSPACECAST(WAVEFORMATEX *, supported_fa_fmt);
+    return hr;
 }
 
 static HRESULT WINAPI XAPOFX_IsOutputFormatSupported(IXAPO *iface,
@@ -128,11 +134,17 @@ static HRESULT WINAPI XAPOFX_IsOutputFormatSupported(IXAPO *iface,
         WAVEFORMATEX **supported_fmt)
 {
     XA2XAPOFXImpl *This = impl_from_IXAPO(iface);
+    FAudioWaveFormatEx *supported_fa_fmt;
+    HRESULT hr;
+
     TRACE("%p, %p, %p, %p\n", This, input_fmt, output_fmt, supported_fmt);
-    return This->fapo->IsOutputFormatSupported(This->fapo,
+    hr = This->fapo->IsOutputFormatSupported(This->fapo,
             (const FAudioWaveFormatEx *)input_fmt,
             (const FAudioWaveFormatEx *)output_fmt,
-            (FAudioWaveFormatEx **)supported_fmt);
+            supported_fmt ? &supported_fa_fmt : NULL);
+    if (supported_fmt)
+        *supported_fmt = ADDRSPACECAST(WAVEFORMATEX *, supported_fa_fmt);
+    return hr;
 }
 
 static HRESULT WINAPI XAPOFX_Initialize(IXAPO *iface, const void *data,
@@ -158,11 +170,43 @@ static HRESULT WINAPI XAPOFX_LockForProcess(IXAPO *iface, UINT32 in_params_count
     XA2XAPOFXImpl *This = impl_from_IXAPO(iface);
     TRACE("%p, %u, %p, %u, %p\n", This, in_params_count, in_params,
             out_params_count, out_params);
+#ifndef __i386_on_x86_64__
     return This->fapo->LockForProcess(This->fapo,
             in_params_count,
             (const FAPOLockForProcessBufferParameters *)in_params,
             out_params_count,
             (const FAPOLockForProcessBufferParameters *)out_params);
+#else
+    {
+        HRESULT hr;
+        uint32_t i;
+        FAPOLockForProcessBufferParameters * WIN32PTR in, * WIN32PTR out;
+
+        in = CoTaskMemAlloc(in_params_count * sizeof(*in));
+        out = CoTaskMemAlloc(out_params_count * sizeof(*out));
+        if (!in || !out)
+            return E_OUTOFMEMORY;
+
+        for (i = 0; i < in_params_count; i++)
+        {
+            in[i].pFormat = (const FAudioWaveFormatEx *)in_params[i].pFormat;
+            in[i].MaxFrameCount = in_params[i].MaxFrameCount;
+        }
+        for (i = 0; i < out_params_count; i++)
+        {
+            out[i].pFormat = (const FAudioWaveFormatEx *)out_params[i].pFormat;
+            out[i].MaxFrameCount = out_params[i].MaxFrameCount;
+        }
+        hr = This->fapo->LockForProcess(This->fapo,
+                in_params_count,
+                in,
+                out_params_count,
+                out);
+        CoTaskMemFree(in);
+        CoTaskMemFree(out);
+        return hr;
+    }
+#endif
 }
 
 static void WINAPI XAPOFX_UnlockForProcess(IXAPO *iface)
@@ -180,9 +224,37 @@ static void WINAPI XAPOFX_Process(IXAPO *iface, UINT32 in_params_count,
     XA2XAPOFXImpl *This = impl_from_IXAPO(iface);
     TRACE("%p, %u, %p, %u, %p, %u\n", This, in_params_count, in_params,
             out_params_count, out_params, enabled);
+#ifndef __i386_on_x86_64__
     This->fapo->Process(This->fapo, in_params_count,
             (const FAPOProcessBufferParameters *)in_params, out_params_count,
             (FAPOProcessBufferParameters *)out_params, enabled);
+#else
+    {
+        /* They are arrays, but docs say XAudio2 only supports one input/output stream */
+        FAPOProcessBufferParameters in, out;
+        if (in_params && in_params_count)
+        {
+            in.pBuffer = in_params[0].pBuffer;
+            in.BufferFlags = (FAPOBufferFlags)in_params[0].BufferFlags;
+            in.ValidFrameCount = in_params[0].ValidFrameCount;
+        }
+        if (out_params && out_params_count)
+        {
+            out.pBuffer = out_params[0].pBuffer;
+            out.BufferFlags = (FAPOBufferFlags)out_params[0].BufferFlags;
+            out.ValidFrameCount = out_params[0].ValidFrameCount;
+        }
+        This->fapo->Process(This->fapo, in_params_count,
+                in_params ? &in : NULL, out_params_count,
+                out_params ? &out : NULL, enabled);
+        if (out_params && out_params_count)
+        {
+            out_params[0].pBuffer = ADDRSPACECAST(void *, out.pBuffer);
+            out_params[0].BufferFlags = (FAPOBufferFlags)out.BufferFlags;
+            out_params[0].ValidFrameCount = out.ValidFrameCount;
+        }
+    }
+#endif
 }
 
 static UINT32 WINAPI XAPOFX_CalcInputFrames(IXAPO *iface, UINT32 output_frames)

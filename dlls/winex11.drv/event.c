@@ -21,6 +21,8 @@
 
 #include "config.h"
 
+#define NONAMELESSUNION
+
 #ifdef HAVE_POLL_H
 #include <poll.h>
 #endif

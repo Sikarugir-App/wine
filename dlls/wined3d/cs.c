@@ -23,6 +23,7 @@
 WINE_DEFAULT_DEBUG_CHANNEL(d3d);
 WINE_DECLARE_DEBUG_CHANNEL(d3d_sync);
 WINE_DECLARE_DEBUG_CHANNEL(fps);
+WINE_DECLARE_DEBUG_CHANNEL(winediag);
 
 #define WINED3D_INITIAL_CS_SIZE 4096
 
@@ -275,6 +276,7 @@ struct wined3d_cs_set_depth_stencil_state
 {
     enum wined3d_cs_op opcode;
     struct wined3d_depth_stencil_state *state;
+    unsigned int stencil_ref;
 };
 
 struct wined3d_cs_set_rasterizer_state
@@ -433,6 +435,7 @@ struct wined3d_cs_clear_unordered_access_view
     enum wined3d_cs_op opcode;
     struct wined3d_unordered_access_view *view;
     struct wined3d_uvec4 clear_value;
+    bool fp;
 };
 
 struct wined3d_cs_copy_uav_counter
@@ -1180,17 +1183,29 @@ void wined3d_cs_emit_set_scissor_rects(struct wined3d_cs *cs, unsigned int rect_
 static void wined3d_cs_exec_set_rendertarget_view(struct wined3d_cs *cs, const void *data)
 {
     const struct wined3d_cs_set_rendertarget_view *op = data;
-    BOOL prev_alpha_swizzle, curr_alpha_swizzle;
+    bool prev_alpha_swizzle, curr_alpha_swizzle;
     struct wined3d_rendertarget_view *prev;
+    bool prev_srgb_write, curr_srgb_write;
+    struct wined3d_device *device;
 
+    device = cs->device;
     prev = cs->state.fb.render_targets[op->view_idx];
     cs->state.fb.render_targets[op->view_idx] = op->view;
-    device_invalidate_state(cs->device, STATE_FRAMEBUFFER);
+    device_invalidate_state(device, STATE_FRAMEBUFFER);
 
     prev_alpha_swizzle = prev && prev->format->id == WINED3DFMT_A8_UNORM;
     curr_alpha_swizzle = op->view && op->view->format->id == WINED3DFMT_A8_UNORM;
     if (prev_alpha_swizzle != curr_alpha_swizzle)
-        device_invalidate_state(cs->device, STATE_SHADER(WINED3D_SHADER_TYPE_PIXEL));
+        device_invalidate_state(device, STATE_SHADER(WINED3D_SHADER_TYPE_PIXEL));
+
+    if (!(device->adapter->d3d_info.wined3d_creation_flags & WINED3D_SRGB_READ_WRITE_CONTROL)
+            || cs->state.render_states[WINED3D_RS_SRGBWRITEENABLE])
+    {
+        prev_srgb_write = prev && prev->format_flags & WINED3DFMT_FLAG_SRGB_WRITE;
+        curr_srgb_write = op->view && op->view->format_flags & WINED3DFMT_FLAG_SRGB_WRITE;
+        if (prev_srgb_write != curr_srgb_write)
+            device_invalidate_state(device, STATE_RENDER(WINED3D_RS_SRGBWRITEENABLE));
+    }
 }
 
 void wined3d_cs_emit_set_rendertarget_view(struct wined3d_cs *cs, unsigned int view_idx,
@@ -1228,6 +1243,7 @@ static void wined3d_cs_exec_set_depth_stencil_view(struct wined3d_cs *cs, const 
     {
         /* Swapping NULL / non NULL depth stencil affects the depth and tests */
         device_invalidate_state(device, STATE_DEPTH_STENCIL);
+        device_invalidate_state(device, STATE_STENCIL_REF);
         device_invalidate_state(device, STATE_RASTERIZER);
     }
     else if (prev)
@@ -1235,7 +1251,7 @@ static void wined3d_cs_exec_set_depth_stencil_view(struct wined3d_cs *cs, const 
         if (prev->format->depth_bias_scale != op->view->format->depth_bias_scale)
             device_invalidate_state(device, STATE_RASTERIZER);
         if (prev->format->stencil_size != op->view->format->stencil_size)
-            device_invalidate_state(device, STATE_RENDER(WINED3D_RS_STENCILREF));
+            device_invalidate_state(device, STATE_STENCIL_REF);
     }
 
     device_invalidate_state(device, STATE_FRAMEBUFFER);
@@ -1665,19 +1681,26 @@ void wined3d_cs_emit_set_blend_state(struct wined3d_cs *cs, struct wined3d_blend
 static void wined3d_cs_exec_set_depth_stencil_state(struct wined3d_cs *cs, const void *data)
 {
     const struct wined3d_cs_set_depth_stencil_state *op = data;
+    struct wined3d_state *state = &cs->state;
 
-    cs->state.depth_stencil_state = op->state;
-    device_invalidate_state(cs->device, STATE_DEPTH_STENCIL);
+    if (state->depth_stencil_state != op->state)
+    {
+        state->depth_stencil_state = op->state;
+        device_invalidate_state(cs->device, STATE_DEPTH_STENCIL);
+    }
+    state->stencil_ref = op->stencil_ref;
+    device_invalidate_state(cs->device, STATE_STENCIL_REF);
 }
 
 void wined3d_cs_emit_set_depth_stencil_state(struct wined3d_cs *cs,
-        struct wined3d_depth_stencil_state *state)
+        struct wined3d_depth_stencil_state *state, unsigned int stencil_ref)
 {
     struct wined3d_cs_set_depth_stencil_state *op;
 
     op = wined3d_cs_require_space(cs, sizeof(*op), WINED3D_CS_QUEUE_DEFAULT);
     op->opcode = WINED3D_CS_OP_SET_DEPTH_STENCIL_STATE;
     op->state = state;
+    op->stencil_ref = stencil_ref;
 
     wined3d_cs_submit(cs, WINED3D_CS_QUEUE_DEFAULT);
 }
@@ -2525,14 +2548,14 @@ static void wined3d_cs_exec_clear_unordered_access_view(struct wined3d_cs *cs, c
     struct wined3d_context *context;
 
     context = context_acquire(cs->device, NULL, 0);
-    cs->device->adapter->adapter_ops->adapter_clear_uav(context, view, &op->clear_value);
+    cs->device->adapter->adapter_ops->adapter_clear_uav(context, view, &op->clear_value, op->fp);
     context_release(context);
 
     wined3d_resource_release(view->resource);
 }
 
-void wined3d_cs_emit_clear_unordered_access_view_uint(struct wined3d_cs *cs,
-        struct wined3d_unordered_access_view *view, const struct wined3d_uvec4 *clear_value)
+void wined3d_cs_emit_clear_unordered_access_view(struct wined3d_cs *cs,
+        struct wined3d_unordered_access_view *view, const struct wined3d_uvec4 *clear_value, bool fp)
 {
     struct wined3d_cs_clear_unordered_access_view *op;
 
@@ -2540,6 +2563,7 @@ void wined3d_cs_emit_clear_unordered_access_view_uint(struct wined3d_cs *cs,
     op->opcode = WINED3D_CS_OP_CLEAR_UNORDERED_ACCESS_VIEW;
     op->view = view;
     op->clear_value = *clear_value;
+    op->fp = fp;
 
     wined3d_resource_acquire(view->resource);
 
@@ -2579,8 +2603,12 @@ static void wined3d_cs_exec_generate_mipmaps(struct wined3d_cs *cs, const void *
 {
     const struct wined3d_cs_generate_mipmaps *op = data;
     struct wined3d_shader_resource_view *view = op->view;
+    struct wined3d_context *context;
 
-    shader_resource_view_generate_mipmaps(view);
+    context = context_acquire(cs->device, NULL, 0);
+    cs->device->adapter->adapter_ops->adapter_generate_mipmap(context, view);
+    context_release(context);
+
     wined3d_resource_release(view->resource);
 }
 
@@ -2962,7 +2990,10 @@ struct wined3d_cs *wined3d_cs_create(struct wined3d_device *device)
 
     cs->ops = &wined3d_cs_st_ops;
     cs->device = device;
-    cs->serialize_commands = TRACE_ON(d3d_sync) || wined3d_settings.cs_multithreaded & WINED3D_CSMT_SERIALIZE;
+    cs->serialize_commands = TRACE_ON(d3d_sync) || wined3d_settings.cs_multithreaded & WINED3D_CSMT_SERIALIZE
+        || !d3d_info->multithread_safe;
+    if (cs->serialize_commands)
+        ERR_(winediag)("Enabling CS commands serialization.\n");
 
     state_init(&cs->state, d3d_info, WINED3D_STATE_NO_REF | WINED3D_STATE_INIT_DEFAULT);
 

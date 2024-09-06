@@ -160,6 +160,7 @@ static const struct object_ops key_ops =
     no_add_queue,            /* add_queue */
     NULL,                    /* remove_queue */
     NULL,                    /* signaled */
+    NULL,                    /* get_esync_fd */
     NULL,                    /* satisfied */
     no_signal,               /* signal */
     no_get_fd,               /* get_fd */
@@ -1780,7 +1781,7 @@ unsigned int get_prefix_cpu_mask(void)
     {
     case PREFIX_64BIT:
         /* 64-bit prefix requires 64-bit server */
-        return sizeof(void *) > sizeof(int) ? ~0 : 0;
+        return wine_is_64bit() ? ~0 : 0;
     case PREFIX_32BIT:
     default:
         return ~CPU_64BIT_MASK;  /* only 32-bit cpus supported on 32-bit prefix */
@@ -1824,7 +1825,7 @@ void init_registry(void)
         if ((p = getenv( "WINEARCH" )) && !strcmp( p, "win32" ))
             prefix_type = PREFIX_32BIT;
         else
-            prefix_type = sizeof(void *) > sizeof(int) ? PREFIX_64BIT : PREFIX_32BIT;
+            prefix_type = wine_is_64bit() ? PREFIX_64BIT : PREFIX_32BIT;
     }
     else if (prefix_type == PREFIX_UNKNOWN)
         prefix_type = PREFIX_32BIT;

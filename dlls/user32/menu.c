@@ -1059,9 +1059,12 @@ static void MENU_CalcItemSize( HDC hdc, MENUITEM *lpitem, HWND hwndOwner,
          */
         lpitem->rect.right += mis.itemWidth + 2 * menucharsize.cx;
         if (menuBar) {
-            /* under at least win95 you seem to be given a standard
-               height for the menu and the height value is ignored */
-            lpitem->rect.bottom += GetSystemMetrics(SM_CYMENUSIZE);
+            if (!getenv("CX_MENU_SOCKET"))
+            {
+                /* under at least win95 you seem to be given a standard
+                   height for the menu and the height value is ignored */
+                lpitem->rect.bottom += GetSystemMetrics(SM_CYMENUSIZE);
+            }
         } else
             lpitem->rect.bottom += mis.itemHeight;
 
@@ -1155,7 +1158,14 @@ static void MENU_CalcItemSize( HDC hdc, MENUITEM *lpitem, HWND hwndOwner,
         }
 	if (hfontOld) SelectObject (hdc, hfontOld);
     } else if( menuBar) {
-        itemheight = max( itemheight, GetSystemMetrics(SM_CYMENU)-1);
+        if (getenv("CX_MENU_SOCKET"))
+        {
+            itemheight = 0;
+        }
+        else
+        {
+            itemheight = max( itemheight, GetSystemMetrics(SM_CYMENU)-1);
+        }
     }
     lpitem->rect.bottom += itemheight;
     TRACE("%s\n", wine_dbgstr_rect( &lpitem->rect));
@@ -1321,6 +1331,7 @@ static void MENU_MenuBarCalcSize( HDC hdc, LPRECT lprect,
     lppop->Width = lppop->items_rect.right - lppop->items_rect.left;
     lppop->Height = lppop->items_rect.bottom - lppop->items_rect.top;
     lprect->bottom = lppop->items_rect.bottom;
+    if (getenv("CX_MENU_SOCKET")) lppop->Height = 0;
 
     /* Flush right all items between the MF_RIGHTJUSTIFY and */
     /* the last item (if several lines, only move the last line) */
@@ -1834,6 +1845,299 @@ static void MENU_DrawPopupMenu( HWND hwnd, HDC hdc, HMENU hmenu )
     }
 }
 
+
+/***********************************************************************
+ *           to_utf8
+ *
+ *  CrossOver HACKs for bug 6727.
+ *
+ *  This function and the next one are used to sanitize internal menu
+ *   titles so they can be embedded in XML as utf8.
+ *
+ */
+static LPSTR to_utf8(LPCWSTR strW)
+{
+    LPSTR str;
+    int len;
+
+    len = WideCharToMultiByte(CP_UTF8, 0, strW, -1, NULL, 0, NULL, NULL);
+    str = HeapAlloc(GetProcessHeap(), 0, len);
+    WideCharToMultiByte(CP_UTF8, 0, strW, -1, str, len, NULL, NULL);
+    return str;
+}
+
+/***********************************************************************
+ *           sanitize_for_xml
+ *
+ *  CrossOver HACKs for bug 6727.
+ *
+ */
+static char* sanitize_for_xml(const WCHAR* srcW)
+{
+    const char* s;
+    char *src, *dst, *d;
+    DWORD len;
+
+    src=to_utf8(srcW);
+
+    /* Start with 1 rather than 0 to make room for null-termination */
+    len=1;
+    for (s=src; *s; s++)
+    {
+        switch (*s)
+        {
+        case '<':
+        case '>':
+            len+=4;
+            break;
+        case '\'':
+            len+=6;
+            break;
+        case '\"':
+            len+=6;
+            break;
+        case '&':
+            len+=5;
+            break;
+        default:
+            if ((unsigned char)*s <= 0x1f)
+                len+=3;
+            else
+                len+=1;
+        }
+    }
+
+    dst=d=HeapAlloc(GetProcessHeap(), 0, len);
+    for (s=src; *s; s++)
+    {
+        switch (*s)
+        {
+        case '<':
+            sprintf(d, "&lt;");
+            d+=4;
+            break;
+        case '>':
+            sprintf(d, "&gt;");
+            d+=4;
+            break;
+        case '\'':
+            sprintf(d, "&apos;");
+            d+=6;
+            break;
+        case '&':
+            sprintf(d, "&amp;");
+            d+=5;
+            break;
+        case '\"':
+            sprintf(d, "&quot;");
+            d+=6;
+            break;
+        default:
+            if ((unsigned char)*s <= 0x1f)
+            {
+                sprintf(d, "^%02X", (unsigned char) *s);
+                d+=3;
+            }
+            else
+            {
+                *d=*s;
+                d++;
+            }
+        }
+    }
+    *d='\0';
+
+    HeapFree(GetProcessHeap(), 0, src);
+    return dst;
+}
+
+struct xml_buffer
+{
+    int len, alloc;
+    char *data;
+};
+
+/***********************************************************************
+ *           MENU_put_string
+ *
+ *  CrossOver HACKs for bug 6727.
+ *
+ *  Add a string to the buffer.
+ *
+ */
+static BOOL MENU_put_string(struct xml_buffer *buffer, const char *data)
+{
+    int size = strlen(data);
+
+    if (buffer->len + size >= buffer->alloc)
+    {
+        int new_alloc = max( 256, max( buffer->len + size, buffer->alloc * 2 ));
+        char *data = heap_realloc( buffer->data, new_alloc );
+        if (!data) return FALSE;
+        buffer->data = data;
+        buffer->alloc = new_alloc;
+    }
+    memcpy( buffer->data + buffer->len, data, size );
+    buffer->len += size;
+    return TRUE;
+}
+
+/***********************************************************************
+ *           MENU_put_escaped_string
+ *
+ *  CrossOver HACKs for bug 6727.
+ *
+ *  Sanitize a string and then add it to the buffer.
+ *
+ */
+static BOOL MENU_put_escaped_string(struct xml_buffer *buffer, const WCHAR *string)
+{
+    BOOL rval;
+    LPSTR escapedstring = sanitize_for_xml(string);
+    rval = MENU_put_string(buffer, escapedstring);
+    HeapFree(GetProcessHeap(), 0, escapedstring);
+    return rval;
+}
+
+
+
+static BOOL MENU_put_menu(struct xml_buffer *buffer,  HMENU hMenu, const WCHAR *title, HWND hwnd);
+
+/***********************************************************************
+ *           MENU_put_item_on_pipe
+ *
+ *  CrossOver HACKs for bug 6727.
+ *
+ *  Compose an XML element for a single menu item, and
+ *   write it to the CX_MENU_SOCKET.
+ *
+ *  If the menu item has a submenu, call MENY_put_menu_on_pipe
+ *   recursively.
+ *
+ */
+static BOOL MENU_put_item(struct xml_buffer *buffer, MENUITEM *item)
+{
+    char idstring[16];
+    sprintf(idstring, "%d", (UINT) item->wID);
+    if (item->fType & MF_SEPARATOR)
+    {
+        if (!MENU_put_string(buffer, "<menuitem>")) return FALSE;
+        if (!MENU_put_string(buffer, "</menuitem>\n")) return FALSE;
+    }
+    else if (item->hSubMenu)
+    {
+        if (!MENU_put_menu(buffer, item->hSubMenu, item->text, (HWND) -1)) return FALSE;
+    }
+    else
+    {
+        char statestring[16];
+        sprintf(statestring, "%d", item->fState);
+        if (!MENU_put_string(buffer, "<menuitem>")) return FALSE;
+        if (!MENU_put_string(buffer, "<menuid>")) return FALSE;
+        if (!MENU_put_string(buffer, idstring)) return FALSE;
+        if (!MENU_put_string(buffer, "</menuid>")) return FALSE;
+        if (!MENU_put_string(buffer, "<title>")) return FALSE;
+        if (!MENU_put_escaped_string(buffer, item->text)) return FALSE;
+        if (!MENU_put_string(buffer, "</title>")) return FALSE;
+        if (!MENU_put_string(buffer, "<state>")) return FALSE;
+        if (!MENU_put_string(buffer, statestring)) return FALSE;
+        if (!MENU_put_string(buffer, "</state>")) return FALSE;
+        if (!MENU_put_string(buffer, "</menuitem>\n")) return FALSE;
+    }
+
+    return TRUE;
+}
+
+/***********************************************************************
+ *           MENU_put_menu
+ *
+ *  CrossOver HACKs for bug 6727.
+ *
+ *  Compose an XML element for a complete menu.
+ */
+static BOOL MENU_put_menu(struct xml_buffer *buffer, HMENU hMenu, const WCHAR *title, HWND hwnd)
+{
+    int i;
+    POPUPMENU *menu = MENU_GetMenu(hMenu);
+    char idstring[16];
+
+    if (!menu) return TRUE;
+    sprintf(idstring, "%d", (UINT) hMenu);
+    if (!MENU_put_string(buffer, "<menu>")) return FALSE;
+    if (!MENU_put_string(buffer, "<menuid>")) return FALSE;
+    if (!MENU_put_string(buffer, idstring)) return FALSE;
+    if (!MENU_put_string(buffer, "</menuid>")) return FALSE;
+    if (!MENU_put_string(buffer, "<title>")) return FALSE;
+    if (!MENU_put_escaped_string(buffer, title)) return FALSE;
+    if (!MENU_put_string(buffer, "</title>")) return FALSE;
+    if (hwnd != (HWND) -1)
+    {
+        char hwndstring[16];
+        sprintf(hwndstring, "%d", (int) hwnd);
+        if (!MENU_put_string(buffer, "<hwnd>")) return FALSE;
+        if (!MENU_put_string(buffer, hwndstring)) return FALSE;
+        if (!MENU_put_string(buffer, "</hwnd>")) return FALSE;
+    }
+
+    for (i = 0; i < menu->nItems; i++)
+    {
+        MENUITEM *item;
+        item = &menu->items[i];
+        if (item && item->text)
+        {
+            if (!MENU_put_item(buffer, item)) return FALSE;
+        }
+        if (item->fType & MF_SEPARATOR)
+        {
+            if (!MENU_put_item(buffer, item)) return FALSE;
+        }
+    }
+    if (!MENU_put_string(buffer, "</menu>\n")) return FALSE;
+    return TRUE;
+}
+
+
+/***********************************************************************
+ *           MENU_send_window_menubar_to_macapp
+ *
+ *  CrossOver HACKs for bug 6727.
+ *
+ *  If we are able to open the CX_MENU_SOCKET, then
+ *   write the menu bar for hwnd to the socket.
+ *
+ *  Returns TRUE on success, False if the socket cannot
+ *   be opened.
+ */
+BOOL MENU_send_window_menubar_to_macapp( HWND ahwnd )
+{
+    void (CDECL *send_cx_menu_data)( const char *data, int len );
+    struct xml_buffer buffer = { 0 };
+    HWND hwnd = ahwnd;
+    HMENU hMenu = NULL;
+
+    if (__wine_init_unix_lib( user32_module, DLL_PROCESS_ATTACH, (void *)1, &send_cx_menu_data )) return FALSE;
+
+    while (!hMenu && hwnd)
+    {
+        hMenu = GetMenu(hwnd);
+        if (!hMenu)
+            hwnd = GetParent(hwnd);
+    }
+
+    if (!hMenu)
+    {
+        return FALSE;
+    }
+
+    if (MENU_put_menu( &buffer, hMenu, L"mainmenu", hwnd ))
+    {
+        send_cx_menu_data( buffer.data, buffer.len );
+        heap_free( buffer.data );
+    }
+    return TRUE;
+}
+
+
 /***********************************************************************
  *           MENU_DrawMenuBar
  *
@@ -1844,6 +2148,12 @@ UINT MENU_DrawMenuBar( HDC hDC, LPRECT lprect, HWND hwnd )
 {
     LPPOPUPMENU lppop;
     HMENU hMenu = GetMenu(hwnd);
+
+    if (getenv("CX_MENU_SOCKET"))
+    {
+        MENU_send_window_menubar_to_macapp( GetForegroundWindow() );
+        return 0;
+    }
 
     lppop = MENU_GetMenu( hMenu );
     if (lppop == NULL || lprect == NULL)
@@ -3709,6 +4019,7 @@ DWORD WINAPI CheckMenuItem( HMENU hMenu, UINT id, UINT flags )
     if (flags & MF_CHECKED) item->fState |= MF_CHECKED;
     else item->fState &= ~MF_CHECKED;
     release_menu_ptr(menu);
+    MENU_send_window_menubar_to_macapp( GetForegroundWindow() );
     return ret;
 }
 
@@ -4101,6 +4412,7 @@ BOOL WINAPI RemoveMenu( HMENU hMenu, UINT id, UINT flags )
     }
     release_menu_ptr(menu);
 
+    MENU_send_window_menubar_to_macapp( GetForegroundWindow() );
     return TRUE;
 }
 

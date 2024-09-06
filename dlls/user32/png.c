@@ -33,6 +33,10 @@
 #ifdef SONAME_LIBPNG
 #include <png.h>
 #endif
+#include <errno.h>
+#include <poll.h>
+#include <sys/un.h>
+#include <sys/socket.h>
 
 #include "ntstatus.h"
 #define WIN32_NO_STATUS
@@ -55,8 +59,33 @@
 
 WINE_DEFAULT_DEBUG_CHANNEL(cursor);
 
-static void *libpng_handle;
-#define MAKE_FUNCPTR(f) static typeof(f) * p##f
+/* CX Hack 9660:
+ * Search for more soname names than the one
+ * that we happened to build Wine against. */
+static struct {
+    const char *soname;
+    const char *verstring;
+} libpng_candidates[] = {
+    { SONAME_LIBPNG, PNG_LIBPNG_VER_STRING },
+    { "libpng16.so", "1.6.0" },
+    { "libpng16.so.0", "1.6.0" },
+    { "libpng16.so.16", "1.6.0" },
+    { "libpng15.so", "1.5.0" },
+    { "libpng15.so.0", "1.5.0" },
+    { "libpng15.so.15", "1.5.0" },
+    { "libpng14.so", "1.4.0" },
+    { "libpng14.so.0", "1.4.0" },
+    { "libpng14.so.14", "1.4.0" },
+    { "libpng12.so", "1.2.0" },
+    { "libpng12.so.0", "1.2.0" },
+    { "libpng12.so.12", "1.2.0" },
+};
+
+static const char *soname_libpng;
+static const char *libpng_ver_string;
+
+static void * HOSTPTR libpng_handle;
+#define MAKE_FUNCPTR(f) static typeof(f) * HOSTPTR p##f
 MAKE_FUNCPTR(png_create_read_struct);
 MAKE_FUNCPTR(png_create_info_struct);
 MAKE_FUNCPTR(png_destroy_read_struct);
@@ -103,7 +132,7 @@ struct png_wrapper
 
 static void user_read_data(png_structp png_ptr, png_bytep data, png_size_t length)
 {
-    struct png_wrapper *png = ppng_get_io_ptr(png_ptr);
+    struct png_wrapper * HOSTPTR png = ppng_get_io_ptr(png_ptr);
 
     if (png->size - png->pos >= length)
     {
@@ -156,7 +185,7 @@ static BITMAPINFO * CDECL load_png(const char *png_data, DWORD *size)
     struct png_wrapper png;
     png_structp png_ptr;
     png_infop info_ptr;
-    png_bytep *row_pointers = NULL;
+    png_bytep * row_pointers = NULL;
     jmp_buf jmpbuf;
     int color_type, bit_depth, bpp, width, height;
     int rowbytes, image_size, mask_size = 0, i;
@@ -170,7 +199,7 @@ static BITMAPINFO * CDECL load_png(const char *png_data, DWORD *size)
     png.pos = 0;
 
     /* initialize libpng */
-    png_ptr = ppng_create_read_struct(PNG_LIBPNG_VER_STRING, NULL, NULL, NULL);
+    png_ptr = ppng_create_read_struct(libpng_ver_string, NULL, NULL, NULL);
     if (!png_ptr) return NULL;
 
     info_ptr = ppng_create_info_struct(png_ptr);
@@ -299,9 +328,139 @@ static const struct png_funcs png_funcs =
     load_png
 };
 
+/***********************************************************************
+ *           MENU_get_menu_socket
+ *
+ *  CrossOver HACKs for bug 6727.
+ *
+ *  On OSX, crossover.app can put a socket handle in
+ *   the CX_MENU_SOCKET environemtn variable.  If that
+ *   value is set then we will make an XML structure out
+ *   of the menu bar and pass it upstream so that the mac
+ *   application can display a proper mac-style menubar.
+ *
+ */
+static int MENU_get_menu_socket(void)
+{
+    char * HOSTPTR socketname;
+
+    if ((socketname = getenv("CX_MENU_SOCKET")))
+    {
+        struct sockaddr_un sa;
+        int sock = socket(AF_UNIX,SOCK_STREAM,0);
+        TRACE("Found socket %s.\n",socketname);
+
+        sa.sun_family=AF_UNIX;
+        if (strlen(socketname) > (sizeof(sa.sun_path)-1))
+        {
+            TRACE("Socket name %s is too long for us to use!\n", socketname);
+            return -1;
+        }
+        strcpy(sa.sun_path,socketname);
+
+        if (!connect(sock, (struct sockaddr *) &sa, sizeof(sa)))
+        {
+            /* Make the socket nonblocking.  That prevents us from locking up
+               if the Mac App stops listening. */
+            int flags = fcntl(sock, F_GETFL);
+            if (fcntl(sock, F_SETFL, flags | O_NONBLOCK) == -1)
+            {
+                TRACE("Failed to set socket to O_NONBLOCK.\n");
+            }
+
+            return sock;
+        }
+        else
+        {
+            WINE_WARN("Failed to connect to menu socket %s.  errno: %d\n",socketname,errno);
+            return -1;
+        }
+    }
+
+    return -1;
+}
+
+static BOOL MENU_write_data_to_pipe(int sock, const char *data, int len)
+{
+    int written = 0;
+    short revents = 0;
+
+    while (written < len && !(revents & (POLLERR | POLLHUP)))
+    {
+        struct pollfd pollstruct;
+        int ready;
+
+        pollstruct.fd = sock;
+        pollstruct.events = POLLOUT;
+        pollstruct.revents = revents;
+
+        ready = poll(&pollstruct, 1, 1000);
+        if (ready && (ready != -1))
+        {
+            int thisChunkSize;
+            thisChunkSize = write(sock,data+written,len-written);
+            if (thisChunkSize == -1)
+            {
+                TRACE("Failed to write menu info.  errno: %d\n", errno);
+                break;
+            }
+            written += thisChunkSize;
+        }
+        else
+        {
+            /*  Timed out.  If the Mac app isn't listening, we
+                can just error out... there will be plenty more
+                menus where this one came from.  */
+            return FALSE;
+        }
+    }
+
+    if (written < len)
+    {
+        WARN("Failed to write to menu socket.  errno: %d\n",errno);
+        return FALSE;
+    }
+
+    return TRUE;
+}
+
+/***********************************************************************
+ *           send_cx_menu_data
+ *
+ *  CrossOver Hack for bug 6727.
+ */
+static void CDECL send_cx_menu_data( const char *data, int len )
+{
+    int sock = MENU_get_menu_socket();
+
+    if (sock == -1) return;
+    MENU_write_data_to_pipe( sock, data, len );
+    close( sock );
+}
+
 NTSTATUS CDECL __wine_init_unix_lib( HMODULE module, DWORD reason, const void *ptr_in, void *ptr_out )
 {
+    int i;
+
     if (reason != DLL_PROCESS_ATTACH) return STATUS_SUCCESS;
+
+    /* CrossOver Hack 6727 */
+    if (ptr_in)
+    {
+        if (!getenv( "CX_MENU_SOCKET" )) return STATUS_DLL_NOT_FOUND;
+        *(void **)ptr_out = send_cx_menu_data;
+        return STATUS_SUCCESS;
+    }
+
+    /* CrossOver Hack 9660 */
+    for(i = 0; i < sizeof(libpng_candidates) / sizeof(*libpng_candidates); ++i)
+    {
+        soname_libpng = libpng_candidates[i].soname;
+        libpng_ver_string = libpng_candidates[i].verstring;
+        libpng_handle = dlopen(soname_libpng, RTLD_NOW);
+        if(libpng_handle)
+            break;
+    }
 
     if (!(libpng_handle = dlopen( SONAME_LIBPNG, RTLD_NOW )))
     {

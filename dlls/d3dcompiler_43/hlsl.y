@@ -1442,7 +1442,7 @@ static struct hlsl_ir_function_decl *new_func_decl(struct hlsl_type *return_type
 
 %token <name> VAR_IDENTIFIER TYPE_IDENTIFIER NEW_IDENTIFIER
 %type <name> any_identifier var_identifier
-%token <name> STRING
+%token <name> HLSLSTRING
 %token <floatval> C_FLOAT
 %token <intval> C_INTEGER
 %type <boolval> boolean
@@ -1559,7 +1559,7 @@ hlsl_prog:                /* empty */
                                 TRACE("Skipping stray semicolon.\n");
                             }
 
-preproc_directive:        PRE_LINE STRING
+preproc_directive:        PRE_LINE HLSLSTRING
                             {
                                 const char **new_array = NULL;
 

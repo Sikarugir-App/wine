@@ -26,6 +26,9 @@
 
 #include <stdarg.h>
 #ifdef HAVE_LIBXML2
+# ifdef __i386_on_x86_64__
+#  include <pthread.h>
+# endif
 # include <libxml/parser.h>
 # include <libxml/xmlerror.h>
 # ifdef SONAME_LIBXSLT
@@ -64,6 +67,38 @@ HINSTANCE MSXML_hInstance = NULL;
 #ifdef HAVE_LIBXML2
 
 WINE_DEFAULT_DEBUG_CHANNEL(msxml);
+
+#include "wine/hostptraddrspace_enter.h"
+
+#ifdef __i386_on_x86_64__
+static void XMLCALL wineXmlFree(void *mem)
+{
+    if (pthread_main_np())
+        return free(mem);
+    heap_free(mem);
+}
+
+static void * LIBXML_ATTR_ALLOC_SIZE(1) XMLCALL wineXmlMalloc(size_t size)
+{
+    if (pthread_main_np())
+        return malloc(size);
+    return heap_alloc(size);
+}
+
+static void * XMLCALL wineXmlRealloc(void *mem, size_t size)
+{
+    if (pthread_main_np())
+        return realloc(mem, size);
+    return heap_realloc(mem, size);
+}
+
+static char * XMLCALL wineXmlStrdup(const char *str)
+{
+    if (pthread_main_np())
+        return strdup(str);
+    return heap_strdup(str);
+}
+#endif
 
 void wineXmlCallbackLog(char const* caller, xmlErrorLevel lvl, char const* msg, va_list ap)
 {
@@ -150,7 +185,7 @@ static int wineXmlReadCallback(void * context, char * buffer, int len)
     if ((context == NULL) || (buffer == NULL))
         return(-1);
 
-    if(!ReadFile( context, buffer,len, &dwBytesRead, NULL))
+    if(!ReadFile( ADDRSPACECAST(HANDLE, context), ADDRSPACECAST(char * WIN32PTR, buffer),len, &dwBytesRead, NULL))
     {
         ERR("Failed to read file\n");
         return -1;
@@ -163,7 +198,7 @@ static int wineXmlReadCallback(void * context, char * buffer, int len)
 
 static int wineXmlFileCloseCallback (void * context)
 {
-    return CloseHandle(context) ? 0 : -1;
+    return CloseHandle(ADDRSPACECAST(void * WIN32PTR, context)) ? 0 : -1;
 }
 
 void* libxslt_handle = NULL;
@@ -234,16 +269,40 @@ static int to_utf8(int cp, unsigned char *out, int *outlen, const unsigned char 
 {
     WCHAR *tmp;
     int len;
+    char * WIN32PTR copy;
 
     if (!in || !inlen) return 0;
 
-    len = MultiByteToWideChar(cp, 0, (const char *)in, *inlen, NULL, 0);
+    if (*inlen == -1)
+        len = strlen((const char *)in) + 1;
+    else
+        len = *inlen;
+    copy = heap_alloc(len);
+    memcpy(copy, in, len);
+    
+    len = MultiByteToWideChar(cp, 0, copy, *inlen, NULL, 0);
     tmp = heap_alloc(len * sizeof(WCHAR));
-    if (!tmp) return -1;
-    MultiByteToWideChar(cp, 0, (const char *)in, *inlen, tmp, len);
+    if (!tmp)
+    {
+        heap_free(copy);
+        return -1;
+    }
+    MultiByteToWideChar(cp, 0, copy, *inlen, tmp, len);
+    heap_free(copy);
 
-    len = WideCharToMultiByte(CP_UTF8, 0, tmp, len, (char *)out, *outlen, NULL, NULL);
+    if (out && outlen && *outlen)
+        copy = heap_alloc(*outlen);
+    else
+        copy = NULL;
+
+    len = WideCharToMultiByte(CP_UTF8, 0, tmp, len, copy, *outlen, NULL, NULL);
     heap_free(tmp);
+    if (copy)
+    {
+        if (len)
+            memcpy(out, copy, len);
+        heap_free(copy);
+    }
     if (!len) return -1;
 
     *outlen = len;
@@ -254,16 +313,41 @@ static int from_utf8(int cp, unsigned char *out, int *outlen, const unsigned cha
 {
     WCHAR *tmp;
     int len;
+    char * WIN32PTR copy;
 
     if (!in || !inlen) return 0;
 
-    len = MultiByteToWideChar(CP_UTF8, 0, (const char *)in, *inlen, NULL, 0);
-    tmp = heap_alloc(len * sizeof(WCHAR));
-    if (!tmp) return -1;
-    MultiByteToWideChar(CP_UTF8, 0, (const char *)in, *inlen, tmp, len);
+    if (*inlen == -1)
+        len = strlen((const char *)in) + 1;
+    else
+        len = *inlen;
 
-    len = WideCharToMultiByte(cp, 0, tmp, len, (char *)out, *outlen, NULL, NULL);
+    copy = heap_alloc(len);
+    memcpy(copy, in, len);
+
+    len = MultiByteToWideChar(CP_UTF8, 0, copy, *inlen, NULL, 0);
+    tmp = heap_alloc(len * sizeof(WCHAR));
+    if (!tmp)
+    {
+        heap_free(copy);
+        return -1;
+    }
+    MultiByteToWideChar(CP_UTF8, 0, copy, *inlen, tmp, len);
+    heap_free(copy);
+
+    if (out && outlen && *outlen)
+        copy = heap_alloc(*outlen);
+    else
+        copy = NULL;
+
+    len = WideCharToMultiByte(cp, 0, tmp, len, copy, *outlen, NULL, NULL);
     heap_free(tmp);
+    if (copy)
+    {
+        if (len)
+            memcpy(out, copy, len);
+        heap_free(copy);
+    }
     if (!len) return -1;
 
     *outlen = len;
@@ -359,6 +443,8 @@ static int utf8_to_win1258(unsigned char *out, int *outlen, const unsigned char 
     return from_utf8(1258, out, outlen, in, inlen);
 }
 
+#include "wine/hostptraddrspace_exit.h"
+
 static void init_char_encoders(void)
 {
     static const struct
@@ -432,6 +518,13 @@ BOOL WINAPI DllMain(HINSTANCE hInstDLL, DWORD fdwReason, LPVOID reserved)
     {
     case DLL_PROCESS_ATTACH:
 #ifdef HAVE_LIBXML2
+#ifdef __i386_on_x86_64__
+        xmlInitMemory();
+        if(xmlMemSetup(wineXmlFree, wineXmlMalloc, wineXmlRealloc,
+                       wineXmlStrdup) == -1)
+            WARN("Failed to register memory callbacks\n");
+#endif
+
         xmlInitParser();
 
         /* Set the default indent character to a single tab,
@@ -467,6 +560,9 @@ BOOL WINAPI DllMain(HINSTANCE hInstDLL, DWORD fdwReason, LPVOID reserved)
 
         xmlCleanupParser();
         schemasCleanup();
+#ifdef __i386_on_x86_64__
+        xmlCleanupMemory();
+#endif
 #endif
         release_typelib();
         break;

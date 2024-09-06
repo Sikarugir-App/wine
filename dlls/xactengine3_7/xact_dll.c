@@ -149,7 +149,7 @@ static HRESULT WINAPI IXACT3CueImpl_GetProperties(IXACT3Cue *iface,
     if(FAILED(hr))
         return hr;
 
-    *ppProperties = (XACT_CUE_INSTANCE_PROPERTIES*) fProps;
+    *ppProperties = ADDRSPACECAST(XACT_CUE_INSTANCE_PROPERTIES*, fProps);
     return hr;
 }
 
@@ -645,26 +645,26 @@ typedef struct wrap_readfile_struct {
 } wrap_readfile_struct;
 
 static int32_t FACTCALL wrap_readfile(
-    void* hFile,
-    void* lpBuffer,
+    void* HOSTPTR hFile,
+    void* HOSTPTR lpBuffer,
     uint32_t nNumberOfBytesRead,
-    uint32_t *lpNumberOfBytesRead,
+    uint32_t * HOSTPTR lpNumberOfBytesRead,
     FACTOverlapped *lpOverlapped)
 {
-    wrap_readfile_struct *wrap = (wrap_readfile_struct*) hFile;
-    return wrap->engine->pReadFile(wrap->file, lpBuffer, nNumberOfBytesRead,
-            lpNumberOfBytesRead, (LPOVERLAPPED)lpOverlapped);
+    wrap_readfile_struct *wrap = ADDRSPACECAST(wrap_readfile_struct*, hFile);
+    return wrap->engine->pReadFile(wrap->file, TRUNCCAST(void* WIN32PTR, lpBuffer), nNumberOfBytesRead,
+            TRUNCCAST(uint32_t* WIN32PTR, lpNumberOfBytesRead), ADDRSPACECAST(LPOVERLAPPED, lpOverlapped));
 }
 
 static int32_t FACTCALL wrap_getoverlappedresult(
-    void* hFile,
+    void* HOSTPTR hFile,
     FACTOverlapped *lpOverlapped,
-    uint32_t *lpNumberOfBytesTransferred,
+    uint32_t * HOSTPTR lpNumberOfBytesTransferred,
     int32_t bWait)
 {
-    wrap_readfile_struct *wrap = (wrap_readfile_struct*) hFile;
-    return wrap->engine->pGetOverlappedResult(wrap->file, (LPOVERLAPPED)lpOverlapped,
-            lpNumberOfBytesTransferred, bWait);
+    wrap_readfile_struct *wrap = ADDRSPACECAST(wrap_readfile_struct*, hFile);
+    return wrap->engine->pGetOverlappedResult(wrap->file, ADDRSPACECAST(LPOVERLAPPED, lpOverlapped),
+            TRUNCCAST(uint32_t* WIN32PTR, lpNumberOfBytesTransferred), bWait);
 }
 
 static inline XACT3EngineImpl *impl_from_IXACT3Engine(IXACT3Engine *iface)
@@ -750,7 +750,7 @@ static HRESULT WINAPI IXACT3EngineImpl_GetFinalMixFormat(IXACT3Engine *iface,
 
 static void FACTCALL fact_notification_cb(const FACTNotification *notification)
 {
-    XACT3EngineImpl *engine = (XACT3EngineImpl *)notification->pvContext;
+    XACT3EngineImpl *engine = ADDRSPACECAST(XACT3EngineImpl *, notification->pvContext);
 
     /* Older versions of FAudio don't pass through the context */
     if (!engine)
@@ -1210,19 +1210,19 @@ static const IXACT3EngineVtbl XACT3Engine_Vtbl =
     IXACT3EngineImpl_GetGlobalVariable
 };
 
-void* XACT_Internal_Malloc(size_t size)
+void* HOSTPTR XACT_Internal_Malloc(size_t size)
 {
     return CoTaskMemAlloc(size);
 }
 
-void XACT_Internal_Free(void* ptr)
+void XACT_Internal_Free(void* HOSTPTR ptr)
 {
-    return CoTaskMemFree(ptr);
+    return CoTaskMemFree(ADDRSPACECAST(void *, ptr));
 }
 
-void* XACT_Internal_Realloc(void* ptr, size_t size)
+void* HOSTPTR XACT_Internal_Realloc(void* HOSTPTR ptr, size_t size)
 {
-    return CoTaskMemRealloc(ptr, size);
+    return CoTaskMemRealloc(ADDRSPACECAST(void *, ptr), size);
 }
 
 static HRESULT WINAPI XACT3CF_QueryInterface(IClassFactory *iface, REFIID riid, void **ppobj)

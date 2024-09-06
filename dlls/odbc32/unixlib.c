@@ -49,6 +49,7 @@
 
 WINE_DECLARE_DEBUG_CHANNEL(winediag);
 
+#include "wine/hostptraddrspace_enter.h"
 static SQLRETURN (*pSQLAllocConnect)(SQLHENV,SQLHDBC*);
 static SQLRETURN (*pSQLAllocEnv)(SQLHENV*);
 static SQLRETURN (*pSQLAllocHandle)(SQLSMALLINT,SQLHANDLE,SQLHANDLE*);
@@ -166,6 +167,7 @@ static SQLRETURN (*pSQLTablePrivilegesW)(SQLHSTMT,SQLWCHAR*,SQLSMALLINT,SQLWCHAR
 static SQLRETURN (*pSQLTables)(SQLHSTMT,SQLCHAR*,SQLSMALLINT,SQLCHAR*,SQLSMALLINT,SQLCHAR*,SQLSMALLINT,SQLCHAR*,SQLSMALLINT);
 static SQLRETURN (*pSQLTablesW)(SQLHSTMT,SQLWCHAR*,SQLSMALLINT,SQLWCHAR*,SQLSMALLINT,SQLWCHAR*,SQLSMALLINT,SQLWCHAR*,SQLSMALLINT);
 static SQLRETURN (*pSQLTransact)(SQLHENV,SQLHDBC,SQLUSMALLINT);
+#include "wine/hostptraddrspace_exit.h"
 
 
 static SQLRETURN WINAPI wrap_SQLAllocConnect(SQLHENV EnvironmentHandle, SQLHDBC *ConnectionHandle)
@@ -928,11 +930,11 @@ static SQLRETURN WINAPI wrap_SQLTransact(SQLHENV EnvironmentHandle, SQLHDBC Conn
     return pSQLTransact(EnvironmentHandle, ConnectionHandle, CompletionType);
 }
 
-static void *libodbc;
+static void * HOSTPTR libodbc;
 
 static NTSTATUS load_odbc( struct sql_funcs *funcs )
 {
-   const char *s = getenv("LIB_ODBC_DRIVER_MANAGER");
+   const char * HOSTPTR s = getenv("LIB_ODBC_DRIVER_MANAGER");
 
 #ifdef SONAME_LIBODBC
    if (!s || !s[0]) s = SONAME_LIBODBC;

@@ -28,6 +28,7 @@
 #include <stdarg.h>
 
 #define NONAMELESSUNION
+#define COBJMACROS
 
 #include "ntstatus.h"
 #define WIN32_NO_STATUS
@@ -40,6 +41,7 @@
 #include "wincodecs_private.h"
 
 #include "wine/debug.h"
+#include "wine/objidl_helpers.h"
 
 WINE_DEFAULT_DEBUG_CHANNEL(wincodecs);
 
@@ -52,20 +54,34 @@ HRESULT CDECL stream_getsize(IStream *stream, ULONGLONG *size)
     return win32_funcs->stream_getsize(stream, size);
 }
 
+#ifdef __i386_on_x86_64__
+HRESULT CDECL stream_read(IStream *stream, void * __ptr64 buffer, ULONG read, ULONG *bytes_read)
+{
+    return i_stream_read(stream, buffer, read, bytes_read);
+}
+#else
 HRESULT CDECL stream_read(IStream *stream, void *buffer, ULONG read, ULONG *bytes_read)
 {
     return win32_funcs->stream_read(stream, buffer, read, bytes_read);
 }
+#endif
 
 HRESULT CDECL stream_seek(IStream *stream, LONGLONG ofs, DWORD origin, ULONGLONG *new_position)
 {
     return win32_funcs->stream_seek(stream, ofs, origin, new_position);
 }
 
+#ifdef __i386_on_x86_64__
+HRESULT CDECL stream_write(IStream *stream, const void * __ptr64 buffer, ULONG write, ULONG *bytes_written)
+{
+    return i_stream_write(stream, buffer, write, bytes_written);
+}
+#else
 HRESULT CDECL stream_write(IStream *stream, const void *buffer, ULONG write, ULONG *bytes_written)
 {
     return win32_funcs->stream_write(stream, buffer, write, bytes_written);
 }
+#endif
 
 HRESULT CDECL decoder_create(const CLSID *decoder_clsid, struct decoder_info *info, struct decoder **result)
 {

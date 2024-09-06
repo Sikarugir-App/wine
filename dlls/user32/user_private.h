@@ -369,10 +369,14 @@ typedef struct
 extern int bitmap_info_size( const BITMAPINFO * info, WORD coloruse ) DECLSPEC_HIDDEN;
 extern BOOL get_icon_size( HICON handle, SIZE *size ) DECLSPEC_HIDDEN;
 
+extern BOOL MENU_send_window_menubar_to_macapp( HWND hwnd );
+
 struct png_funcs
 {
     BOOL (CDECL *get_png_info)(const void *png_data, DWORD size, int *width, int *height, int *bpp);
     BITMAPINFO * (CDECL *load_png)(const char *png_data, DWORD *size);
+    /*  CrossOver Hack for bug 6727 */
+    void (CDECL *send_cx_menu_data)( const char *data, int len );
 };
 
 /* Mingw's assert() imports MessageBoxA and gets confused by user32 exporting it */

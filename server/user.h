@@ -31,12 +31,14 @@ struct hook_table;
 struct window_class;
 struct atom_table;
 struct clipboard;
+struct shm_surface;
 
 enum user_object
 {
     USER_WINDOW = 1,
     USER_HOOK,
-    USER_CLIENT  /* arbitrary client handle */
+    USER_CLIENT,  /* arbitrary client handle */
+    USER_MONITOR
 };
 
 #define DESKTOP_ATOM  ((atom_t)32769)
@@ -77,6 +79,16 @@ struct desktop
     unsigned int         users;            /* processes and threads using this desktop */
     struct global_cursor cursor;           /* global cursor information */
     unsigned char        keystate[256];    /* asynchronous key state */
+};
+
+struct monitor
+{
+    user_handle_t        handle;           /* monitor handle */
+    struct list          entry;            /* entry in global monitor list */
+    rectangle_t          monitor_rect;     /* monitor rectangle */
+    rectangle_t          work_rect;        /* monitor work area rectangle */
+    WCHAR                *adapter_name;    /* adapter name */
+    data_size_t          adapter_name_len; /* adapter name length */
 };
 
 /* user handles functions */
@@ -120,6 +132,7 @@ extern void post_win_event( struct thread *thread, unsigned int event,
                             const WCHAR *module, data_size_t module_size,
                             user_handle_t handle );
 extern void free_hotkeys( struct desktop *desktop, user_handle_t window );
+extern void wake_queue_for_surface( struct process *process );
 
 /* region functions */
 
@@ -177,6 +190,12 @@ extern int is_desktop_class( struct window_class *class );
 extern int is_hwnd_message_class( struct window_class *class );
 extern atom_t get_class_atom( struct window_class *class );
 extern client_ptr_t get_class_client_ptr( struct window_class *class );
+
+/* window surface functions */
+
+extern struct shm_surface *find_pending_surface( struct process *process, user_handle_t *win,
+                                                 lparam_t *lparam, rectangle_t *bounds );
+extern void unlock_surface( struct shm_surface *obj );
 
 /* windows station functions */
 

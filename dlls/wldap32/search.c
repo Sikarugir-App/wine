@@ -108,7 +108,7 @@ ULONG CDECL ldap_searchW( WLDAP32_LDAP *ld, PWCHAR base, ULONG scope, PWCHAR fil
     PWCHAR attrs[], ULONG attrsonly )
 {
     ULONG ret = WLDAP32_LDAP_NOT_SUPPORTED;
-#ifdef HAVE_LDAP
+#if defined(HAVE_LDAP) && !defined(__i386_on_x86_64__)
     char *baseU = NULL, *filterU = NULL, **attrsU = NULL;
     int msg;
 
@@ -240,7 +240,7 @@ ULONG CDECL ldap_search_extW( WLDAP32_LDAP *ld, PWCHAR base, ULONG scope,
     PLDAPControlW *clientctrls, ULONG timelimit, ULONG sizelimit, ULONG *message )
 {
     ULONG ret = WLDAP32_LDAP_NOT_SUPPORTED;
-#ifdef HAVE_LDAP
+#if defined(HAVE_LDAP) && !defined(__i386_on_x86_64__)
     char *baseU = NULL, *filterU = NULL, **attrsU = NULL;
     LDAPControl **serverctrlsU = NULL, **clientctrlsU = NULL;
     struct timeval tv, *tvp = NULL;
@@ -383,7 +383,7 @@ ULONG CDECL ldap_search_ext_sW( WLDAP32_LDAP *ld, PWCHAR base, ULONG scope,
     PLDAPControlW *clientctrls, struct l_timeval* timeout, ULONG sizelimit, WLDAP32_LDAPMessage **res )
 {
     ULONG ret = WLDAP32_LDAP_NOT_SUPPORTED;
-#ifdef HAVE_LDAP
+#if defined(HAVE_LDAP) && !defined(__i386_on_x86_64__)
     char *baseU = NULL, *filterU = NULL, **attrsU = NULL;
     LDAPControl **serverctrlsU = NULL, **clientctrlsU = NULL;
 
@@ -500,7 +500,7 @@ ULONG CDECL ldap_search_sW( WLDAP32_LDAP *ld, PWCHAR base, ULONG scope, PWCHAR f
     PWCHAR attrs[], ULONG attrsonly, WLDAP32_LDAPMessage **res )
 {
     ULONG ret = WLDAP32_LDAP_NOT_SUPPORTED;
-#ifdef HAVE_LDAP
+#if defined(HAVE_LDAP) && !defined(__i386_on_x86_64__)
     char *baseU = NULL, *filterU = NULL, **attrsU = NULL;
 
     ret = WLDAP32_LDAP_NO_MEMORY;
@@ -609,7 +609,7 @@ ULONG CDECL ldap_search_stW( WLDAP32_LDAP *ld, const PWCHAR base, ULONG scope,
     struct l_timeval *timeout, WLDAP32_LDAPMessage **res )
 {
     ULONG ret = WLDAP32_LDAP_NOT_SUPPORTED;
-#ifdef HAVE_LDAP
+#if defined(HAVE_LDAP) && !defined(__i386_on_x86_64__)
     char *baseU = NULL, *filterU = NULL, **attrsU = NULL;
 
     ret = WLDAP32_LDAP_NO_MEMORY;

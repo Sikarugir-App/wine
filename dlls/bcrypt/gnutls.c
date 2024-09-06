@@ -79,6 +79,8 @@ static union key_data *key_data( struct key *key )
     return (union key_data *)key->private;
 }
 
+#include "wine/hostptraddrspace_enter.h"
+
 /* Not present in gnutls version < 3.0 */
 static int (*pgnutls_cipher_tag)(gnutls_cipher_hd_t, void *, size_t);
 static int (*pgnutls_cipher_add_auth)(gnutls_cipher_hd_t, const void *, size_t);
@@ -228,9 +230,11 @@ static void gnutls_log( int level, const char *msg )
     TRACE( "<%d> %s", level, msg );
 }
 
+#include "wine/hostptraddrspace_exit.h"
+
 static BOOL gnutls_initialize(void)
 {
-    const char *env_str;
+    const char * HOSTPTR env_str;
     int ret;
 
     if ((env_str = getenv("GNUTLS_SYSTEM_PRIORITY_FILE")))
@@ -243,7 +247,21 @@ static BOOL gnutls_initialize(void)
         setenv("GNUTLS_SYSTEM_PRIORITY_FILE", "/dev/null", 0);
     }
 
-    if (!(libgnutls_handle = dlopen( SONAME_LIBGNUTLS, RTLD_NOW )))
+if (1) { /* CROSSOVER HACK - bug 10151 */
+    const char *libgnutls_name_candidates[] = {SONAME_LIBGNUTLS,
+                                               "libgnutls.so.30",
+                                               "libgnutls.so.28",
+                                               "libgnutls-deb0.so.28",
+                                               "libgnutls.so.26",
+                                               NULL};
+    int i;
+    for (i=0; libgnutls_name_candidates[i] && !libgnutls_handle; i++)
+        libgnutls_handle = dlopen(libgnutls_name_candidates[i], RTLD_NOW);
+}
+else
+    libgnutls_handle = dlopen( SONAME_LIBGNUTLS, RTLD_NOW );
+
+    if (!libgnutls_handle)
     {
         ERR_(winediag)( "failed to load libgnutls, no support for encryption\n" );
         return FALSE;
@@ -378,7 +396,7 @@ static void gnutls_uninitialize(void)
 
 struct buffer
 {
-    BYTE  *buffer;
+    BYTE  * HOSTPTR buffer;
     DWORD  length;
     DWORD  pos;
     BOOL   error;
@@ -397,14 +415,14 @@ static void buffer_free( struct buffer *buffer )
     free( buffer->buffer );
 }
 
-static void buffer_append( struct buffer *buffer, BYTE *data, DWORD len )
+static void buffer_append( struct buffer *buffer, BYTE * HOSTPTR data, DWORD len )
 {
     if (!len) return;
 
     if (buffer->pos + len > buffer->length)
     {
         DWORD new_length = max( max( buffer->pos + len, buffer->length * 2 ), 64 );
-        BYTE *new_buffer;
+        BYTE * HOSTPTR new_buffer;
 
         if (!(new_buffer = realloc( buffer->buffer, new_length )))
         {
@@ -669,7 +687,7 @@ static NTSTATUS export_gnutls_pubkey_rsa( gnutls_privkey_t gnutls_key, ULONG bit
 {
     BCRYPT_RSAKEY_BLOB *rsa_blob;
     gnutls_datum_t m, e;
-    UCHAR *dst, *src;
+    UCHAR *dst, * HOSTPTR src;
     int ret;
 
     if ((ret = pgnutls_privkey_export_rsa_raw( gnutls_key, &m, &e, NULL, NULL, NULL, NULL, NULL, NULL )))
@@ -724,7 +742,7 @@ static NTSTATUS export_gnutls_pubkey_ecc( gnutls_privkey_t gnutls_key, enum alg_
     gnutls_ecc_curve_t curve;
     gnutls_datum_t x, y;
     DWORD magic, size;
-    UCHAR *src, *dst;
+    UCHAR * HOSTPTR src, * HOSTPTR dst;
     int ret;
 
     switch (alg_id)
@@ -786,7 +804,7 @@ static NTSTATUS export_gnutls_pubkey_dsa( gnutls_privkey_t gnutls_key, ULONG bit
 {
     BCRYPT_DSA_KEY_BLOB *dsa_blob;
     gnutls_datum_t p, q, g, y;
-    UCHAR *dst, *src;
+    UCHAR * dst, * HOSTPTR src;
     int ret;
 
     if ((ret = pgnutls_privkey_export_dsa_raw( gnutls_key, &p, &q, &g, &y, NULL )))
@@ -862,7 +880,7 @@ static NTSTATUS export_gnutls_pubkey_dsa_capi( gnutls_privkey_t gnutls_key, cons
     BLOBHEADER *hdr;
     DSSPUBKEY *dsskey;
     gnutls_datum_t p, q, g, y;
-    UCHAR *dst, *src;
+    UCHAR *dst, * HOSTPTR src;
     int i, ret, size = sizeof(*hdr) + sizeof(*dsskey) + sizeof(*seed);
 
     if (bitlen > 1024)
@@ -1021,7 +1039,7 @@ static NTSTATUS CDECL key_export_ecc( struct key *key, UCHAR *buf, ULONG len, UL
     gnutls_ecc_curve_t curve;
     gnutls_datum_t x, y, d;
     DWORD magic, size;
-    UCHAR *src, *dst;
+    UCHAR * HOSTPTR src, * HOSTPTR dst;
     int ret;
 
     switch (key->alg_id)
@@ -1170,7 +1188,7 @@ static NTSTATUS CDECL key_export_dsa_capi( struct key *key, UCHAR *buf, ULONG le
     BLOBHEADER *hdr;
     DSSPUBKEY *pubkey;
     gnutls_datum_t p, q, g, y, x;
-    UCHAR *src, *dst;
+    UCHAR * HOSTPTR src, *dst;
     int i, ret, size;
 
     if ((ret = pgnutls_privkey_export_dsa_raw( key_data(key)->privkey, &p, &q, &g, &y, &x )))
@@ -1674,7 +1692,7 @@ static NTSTATUS format_gnutls_signature( enum alg_id type, gnutls_datum_t signat
         int err;
         unsigned int pad_size_r, pad_size_s, sig_len = get_signature_length( type );
         gnutls_datum_t r, s; /* format as r||s */
-        unsigned char *r_data, *s_data;
+        unsigned char * HOSTPTR r_data, * HOSTPTR s_data;
 
         if ((err = pgnutls_decode_rs_value( &signature, &r, &s )))
         {
@@ -1958,7 +1976,7 @@ NTSTATUS CDECL __wine_init_unix_lib( HMODULE module, DWORD reason, const void *p
         *(const struct key_funcs **)ptr_out = &key_funcs;
         break;
     case DLL_PROCESS_DETACH:
-        gnutls_uninitialize();
+        if (libgnutls_handle) gnutls_uninitialize();
         break;
     }
     return STATUS_SUCCESS;

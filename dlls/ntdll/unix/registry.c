@@ -47,7 +47,7 @@ NTSTATUS WINAPI NtCreateKey( HANDLE *key, ACCESS_MASK access, const OBJECT_ATTRI
 {
     NTSTATUS ret;
     data_size_t len;
-    struct object_attributes *objattr;
+    struct object_attributes * HOSTPTR objattr;
 
     if (!key || !attr) return STATUS_ACCESS_VIOLATION;
     if (attr->Length > sizeof(OBJECT_ATTRIBUTES)) return STATUS_INVALID_PARAMETER;
@@ -633,7 +633,7 @@ NTSTATUS WINAPI NtLoadKey( const OBJECT_ATTRIBUTES *attr, OBJECT_ATTRIBUTES *fil
     HANDLE key;
     IO_STATUS_BLOCK io;
     data_size_t len;
-    struct object_attributes *objattr;
+    struct object_attributes * HOSTPTR objattr;
 
     TRACE("(%p,%p)\n", attr, file);
 
@@ -750,7 +750,7 @@ NTSTATUS WINAPI NtQueryLicenseValue( const UNICODE_STRING *name, ULONG *type,
     if (!name || !name->Buffer || !name->Length || !retlen) return STATUS_INVALID_PARAMETER;
 
     info_length = FIELD_OFFSET( KEY_VALUE_PARTIAL_INFORMATION, Data ) + length;
-    if (!(info = malloc( info_length ))) return STATUS_NO_MEMORY;
+    if (!(info = RtlAllocateHeap( GetProcessHeap(), 0, info_length ))) return STATUS_NO_MEMORY;
 
     InitializeObjectAttributes( &attr, &keyW, 0, 0, NULL );
 
@@ -773,6 +773,6 @@ NTSTATUS WINAPI NtQueryLicenseValue( const UNICODE_STRING *name, ULONG *type,
     if (status == STATUS_OBJECT_NAME_NOT_FOUND)
         FIXME( "License key %s not found\n", debugstr_w(name->Buffer) );
 
-    free( info );
+    RtlFreeHeap( GetProcessHeap(), 0, info );
     return status;
 }

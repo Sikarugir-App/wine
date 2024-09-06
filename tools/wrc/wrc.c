@@ -148,7 +148,11 @@ int utf8_input = 0;
 
 int check_utf8 = 1;  /* whether to check for valid utf8 */
 
+#ifdef __i386_on_x86_64__
+static int pointer_size = 4;
+#else
 static int pointer_size = sizeof(void *);
+#endif
 
 static int verify_translations_mode;
 

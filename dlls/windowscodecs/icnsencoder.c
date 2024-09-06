@@ -103,7 +103,7 @@ typedef struct IcnsEncoder {
     IconFamilyHandle icns_family;
     struct encoder_frame frame;
     OSType icns_type;
-    BYTE* icns_image;
+    BYTE* HOSTPTR icns_image;
     int lines_written;
 } IcnsEncoder;
 
@@ -170,7 +170,7 @@ static HRESULT CDECL IcnsEncoder_write_lines(struct encoder* iface,
 
     for (i = 0; i < line_count; i++)
     {
-        BYTE *src_row, *dst_row;
+        BYTE *src_row, * HOSTPTR dst_row;
         UINT j;
         src_row = data + stride * i;
         dst_row = This->icns_image + (This->lines_written + i)*(This->frame.width*4);

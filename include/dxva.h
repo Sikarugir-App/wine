@@ -19,6 +19,8 @@
 #ifndef __WINE_DXVA_H
 #define __WINE_DXVA_H
 
+#include "wine/winheader_enter.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -650,5 +652,7 @@ typedef struct _DXVA_ExtendedFormat
 #ifdef __cplusplus
 }
 #endif
+
+#include "wine/winheader_exit.h"
 
 #endif /* __WINE_DXVA_H */
