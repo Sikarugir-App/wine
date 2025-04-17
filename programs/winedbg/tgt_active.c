@@ -731,6 +731,8 @@ static void output_system_info(void)
 {
 #ifdef __i386__
     static const char platform[] = "i386";
+#elif defined(__i386_on_x86_64__)
+    static const char platform[] = "x86_32on64";
 #elif defined(__x86_64__)
     static const char platform[] = "x86_64";
 #elif defined(__powerpc__)

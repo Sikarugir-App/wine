@@ -1666,19 +1666,27 @@ void context_invalidate_state(struct wined3d_context *context, DWORD state)
 }
 
 /* This function takes care of wined3d pixel format selection. */
-static int context_choose_pixel_format(const struct wined3d_device *device, HDC hdc,
-        const struct wined3d_format *color_format, const struct wined3d_format *ds_format,
+static int context_choose_pixel_format(const struct wined3d_device *device, const struct wined3d_swapchain *swapchain,
+        HDC hdc, const struct wined3d_format *color_format, const struct wined3d_format *ds_format,
         BOOL auxBuffers)
 {
+    const struct wined3d_gl_info *gl_info = &device->adapter->gl_info;
     unsigned int cfg_count = wined3d_adapter_gl(device->adapter)->pixel_format_count;
     unsigned int current_value;
     PIXELFORMATDESCRIPTOR pfd;
+    BOOL double_buffer = TRUE;
     int iPixelFormat = 0;
     unsigned int i;
 
     TRACE("device %p, dc %p, color_format %s, ds_format %s, aux_buffers %#x.\n",
             device, hdc, debug_d3dformat(color_format->id), debug_d3dformat(ds_format->id),
             auxBuffers);
+
+    /* CrossOver hack for bug 9330. */
+    if ((gl_info->quirks & WINED3D_CX_QUIRK_APPLE_DOUBLE_BUFFER)
+            && wined3d_settings.offscreen_rendering_mode == ORM_FBO
+            && !swapchain->desc.backbuffer_count)
+        double_buffer = FALSE;
 
     current_value = 0;
     for (i = 0; i < cfg_count; ++i)
@@ -1691,7 +1699,7 @@ static int context_choose_pixel_format(const struct wined3d_device *device, HDC 
         if (cfg->iPixelType != WGL_TYPE_RGBA_ARB)
             continue;
         /* In window mode we need a window drawable format and double buffering. */
-        if (!(cfg->windowDrawable && cfg->doubleBuffer))
+        if (!cfg->windowDrawable || (double_buffer && !cfg->doubleBuffer))
             continue;
         if (cfg->redSize < color_format->red_size)
             continue;
@@ -1714,17 +1722,19 @@ static int context_choose_pixel_format(const struct wined3d_device *device, HDC 
          * depth it is no problem to emulate 16-bit using e.g. 24-bit, so accept that. */
         if (cfg->depthSize == ds_format->depth_size)
             value += 1;
-        if (cfg->stencilSize == ds_format->stencil_size)
+        if (!cfg->doubleBuffer == !double_buffer)
             value += 2;
-        if (cfg->alphaSize == color_format->alpha_size)
+        if (cfg->stencilSize == ds_format->stencil_size)
             value += 4;
+        if (cfg->alphaSize == color_format->alpha_size)
+            value += 8;
         /* We like to have aux buffers in backbuffer mode */
         if (auxBuffers && cfg->auxBuffers)
-            value += 8;
+            value += 16;
         if (cfg->redSize == color_format->red_size
                 && cfg->greenSize == color_format->green_size
                 && cfg->blueSize == color_format->blue_size)
-            value += 16;
+            value += 32;
 
         if (value > current_value)
         {
@@ -1740,7 +1750,9 @@ static int context_choose_pixel_format(const struct wined3d_device *device, HDC 
         memset(&pfd, 0, sizeof(pfd));
         pfd.nSize      = sizeof(pfd);
         pfd.nVersion   = 1;
-        pfd.dwFlags    = PFD_SUPPORT_OPENGL | PFD_DOUBLEBUFFER | PFD_DRAW_TO_WINDOW;/*PFD_GENERIC_ACCELERATED*/
+        pfd.dwFlags    = PFD_SUPPORT_OPENGL | PFD_DRAW_TO_WINDOW;/*PFD_GENERIC_ACCELERATED*/
+        if (double_buffer)
+            pfd.dwFlags |= PFD_DOUBLEBUFFER;
         pfd.iPixelType = PFD_TYPE_RGBA;
         pfd.cAlphaBits = color_format->alpha_size;
         pfd.cColorBits = color_format->red_size + color_format->green_size
@@ -2065,7 +2077,7 @@ HRESULT wined3d_context_gl_init(struct wined3d_context_gl *context_gl, struct wi
             {
                 ds_format = wined3d_get_format(device->adapter, ds_formats[i], WINED3D_BIND_DEPTH_STENCIL);
                 if ((context_gl->pixel_format = context_choose_pixel_format(device,
-                        context_gl->dc, color_format, ds_format, TRUE)))
+                        swapchain, context_gl->dc, color_format, ds_format, TRUE)))
                 {
                     swapchain->ds_format = ds_format;
                     break;
@@ -2077,7 +2089,7 @@ HRESULT wined3d_context_gl_init(struct wined3d_context_gl *context_gl, struct wi
         }
         else
         {
-            context_gl->pixel_format = context_choose_pixel_format(device,
+            context_gl->pixel_format = context_choose_pixel_format(device, swapchain,
                     context_gl->dc, color_format, swapchain->ds_format, TRUE);
         }
     }
@@ -2093,7 +2105,7 @@ HRESULT wined3d_context_gl_init(struct wined3d_context_gl *context_gl, struct wi
          * conflicting pixel formats. */
         color_format = wined3d_get_format(device->adapter, WINED3DFMT_B8G8R8A8_UNORM, target_bind_flags);
         ds_format = wined3d_get_format(device->adapter, WINED3DFMT_UNKNOWN, WINED3D_BIND_DEPTH_STENCIL);
-        context_gl->pixel_format = context_choose_pixel_format(device,
+        context_gl->pixel_format = context_choose_pixel_format(device, swapchain,
                 context_gl->dc, color_format, ds_format, FALSE);
     }
 
@@ -2614,11 +2626,11 @@ void *wined3d_context_gl_map_bo_address(struct wined3d_context_gl *context_gl,
     if (gl_info->supported[ARB_MAP_BUFFER_RANGE])
     {
         GLbitfield map_flags = wined3d_resource_gl_map_flags(flags) & ~GL_MAP_FLUSH_EXPLICIT_BIT;
-        memory = GL_EXTCALL(glMapBufferRange(binding, (INT_PTR)data->addr, size, map_flags));
+        memory = ADDRSPACECAST(void*, GL_EXTCALL(glMapBufferRange(binding, (INT_PTR)data->addr, size, map_flags)));
     }
     else
     {
-        memory = GL_EXTCALL(glMapBuffer(binding, wined3d_resource_gl_legacy_map_flags(flags)));
+        memory = ADDRSPACECAST(void*, GL_EXTCALL(glMapBuffer(binding, wined3d_resource_gl_legacy_map_flags(flags))));
         memory += (INT_PTR)data->addr;
     }
 
@@ -2659,7 +2671,7 @@ void wined3d_context_gl_copy_bo_address(struct wined3d_context_gl *context_gl,
             GL_EXTCALL(glBindBuffer(GL_COPY_READ_BUFFER, src->buffer_object));
             GL_EXTCALL(glBindBuffer(GL_COPY_WRITE_BUFFER, dst->buffer_object));
             GL_EXTCALL(glCopyBufferSubData(GL_COPY_READ_BUFFER, GL_COPY_WRITE_BUFFER,
-                    (GLintptr)src->addr, (GLintptr)dst->addr, size));
+                    (WINEGLDEF(GLintptr))src->addr, (WINEGLDEF(GLintptr))dst->addr, size));
             checkGLcall("direct buffer copy");
         }
         else
@@ -2676,13 +2688,13 @@ void wined3d_context_gl_copy_bo_address(struct wined3d_context_gl *context_gl,
     else if (!dst->buffer_object && src->buffer_object)
     {
         wined3d_context_gl_bind_bo(context_gl, src_binding, src->buffer_object);
-        GL_EXTCALL(glGetBufferSubData(src_binding, (GLintptr)src->addr, size, dst->addr));
+        GL_EXTCALL(glGetBufferSubData(src_binding, (WINEGLDEF(GLintptr))src->addr, size, dst->addr));
         checkGLcall("buffer download");
     }
     else if (dst->buffer_object && !src->buffer_object)
     {
         wined3d_context_gl_bind_bo(context_gl, dst_binding, dst->buffer_object);
-        GL_EXTCALL(glBufferSubData(dst_binding, (GLintptr)dst->addr, size, src->addr));
+        GL_EXTCALL(glBufferSubData(dst_binding, (WINEGLDEF(GLintptr))dst->addr, size, src->addr));
         checkGLcall("buffer upload");
     }
     else
@@ -4334,7 +4346,7 @@ void dispatch_compute(struct wined3d_device *device, const struct wined3d_state 
         struct wined3d_buffer *buffer = indirect->buffer;
 
         GL_EXTCALL(glBindBuffer(GL_DISPATCH_INDIRECT_BUFFER, wined3d_buffer_gl(buffer)->buffer_object));
-        GL_EXTCALL(glDispatchComputeIndirect((GLintptr)indirect->offset));
+        GL_EXTCALL(glDispatchComputeIndirect((WINEGLDEF(GLintptr))indirect->offset));
         GL_EXTCALL(glBindBuffer(GL_DISPATCH_INDIRECT_BUFFER, 0));
     }
     else

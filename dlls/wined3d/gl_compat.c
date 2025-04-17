@@ -31,6 +31,8 @@
 WINE_DEFAULT_DEBUG_CHANNEL(gl_compat);
 WINE_DECLARE_DEBUG_CHANNEL(d3d_perf);
 
+#include "wine/hostaddrspace_enter.h"
+
 /* Start GL_ARB_multitexture emulation */
 static void WINE_GLAPI wine_glMultiTexCoord1fARB(GLenum target, GLfloat s) {
     if(target != GL_TEXTURE0) {
@@ -309,7 +311,7 @@ static void (WINE_GLAPI *old_fogcoord_glColor4f)(GLfloat r, GLfloat g, GLfloat b
 
 static void WINE_GLAPI wine_glVertex4f(GLfloat x, GLfloat y, GLfloat z, GLfloat w)
 {
-    struct wined3d_context *ctx = context_get_current();
+    struct wined3d_context *WIN32PTR ctx = context_get_current();
     struct wined3d_context_gl *ctx_gl;
 
     /* This can be called from draw_test_quad() and at that point there is no
@@ -354,7 +356,7 @@ static void WINE_GLAPI wine_glVertex3fv(const GLfloat *pos) {
 
 static void WINE_GLAPI wine_glColor4f(GLfloat r, GLfloat g, GLfloat b, GLfloat a)
 {
-    struct wined3d_context *ctx = context_get_current();
+    struct wined3d_context *WIN32PTR ctx = context_get_current();
     struct wined3d_context_gl *ctx_gl;
 
     /* This can be called from draw_test_quad() and at that point there is no
@@ -406,6 +408,8 @@ static void WINE_GLAPI wine_glFogCoordfvEXT(const GLfloat *f) {
 static void WINE_GLAPI wine_glFogCoorddvEXT(const GLdouble *f) {
     wine_glFogCoordfEXT((GLfloat) *f);
 }
+
+#include "wine/hostaddrspace_exit.h"
 
 /* End GL_EXT_fog_coord emulation */
 

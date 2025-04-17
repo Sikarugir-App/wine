@@ -570,7 +570,7 @@ struct actctx_loader
 
 static const xmlstr_t empty_xmlstr;
 
-#ifdef __i386__
+#if defined(__i386__) || defined(__i386_on_x86_64__)
 static const WCHAR current_archW[] = {'x','8','6',0};
 #elif defined __x86_64__
 static const WCHAR current_archW[] = {'a','m','d','6','4',0};
@@ -737,7 +737,8 @@ static WCHAR *strdupW(const WCHAR* str)
 
     if (!(ptr = RtlAllocateHeap(GetProcessHeap(), 0, (strlenW(str) + 1) * sizeof(WCHAR))))
         return NULL;
-    return strcpyW(ptr, str);
+    strcpyW(ptr, str);
+    return ptr;
 }
 
 static WCHAR *xmlstrdupW(const xmlstr_t* str)

@@ -19,6 +19,8 @@
 #ifndef __WINE_D3DKMTHK_H
 #define __WINE_D3DKMTHK_H
 
+#include "wine/winheader_enter.h"
+
 #include <d3dukmdt.h>
 
 typedef enum _D3DKMT_VIDPNSOURCEOWNER_TYPE
@@ -175,5 +177,7 @@ NTSTATUS WINAPI D3DKMTOpenAdapterFromGdiDisplayName(D3DKMT_OPENADAPTERFROMGDIDIS
 #ifdef __cplusplus
 }
 #endif /* __cplusplus */
+
+#include "wine/winheader_exit.h"
 
 #endif /* __WINE_D3DKMTHK_H */

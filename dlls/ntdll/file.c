@@ -248,6 +248,26 @@ static NTSTATUS FILE_CreateFile( PHANDLE handle, ACCESS_MASK access, POBJECT_ATT
             *handle = wine_server_ptr_handle( reply->handle );
         }
         SERVER_END_REQ;
+
+        /* BEGIN CODEWEAVERS HACK */
+        if (created)
+        {
+            static const char wininit[] = "WinInit.Ini", sc[] = { ';',';' };
+
+            if (unix_name.Length >= sizeof(wininit)-1 &&
+                !strcmp( unix_name.Buffer + unix_name.Length - (sizeof(wininit)-1), wininit ))
+            {
+                int fd;
+                if (wine_server_handle_to_fd( *handle, FILE_WRITE_DATA, &fd, NULL ) == STATUS_SUCCESS)
+                {
+                    struct stat st;
+                    if (fstat( fd, &st ) != -1 && st.st_size == 0) pwrite( fd, sc, sizeof(sc), 0 );
+                    wine_server_release_fd( *handle, fd );
+                }
+            }
+        }
+        /* END CODEWEAVERS HACK */
+
         RtlFreeHeap( GetProcessHeap(), 0, objattr );
         RtlFreeAnsiString( &unix_name );
     }
@@ -796,6 +816,30 @@ static NTSTATUS register_async_file_read( HANDLE handle, HANDLE event,
     return status;
 }
 
+static DWORD get_module_filename( WCHAR *buf, DWORD buflen )
+{
+    DWORD len = 0;
+    ULONG_PTR magic;
+    LDR_MODULE *mod;
+
+    LdrLockLoaderLock( 0, NULL, &magic );
+    if (LdrFindEntryForAddress( NtCurrentTeb()->Peb->ImageBaseAddress, &mod ) == STATUS_SUCCESS)
+    {
+        len = min( buflen - 1, mod->FullDllName.Length / sizeof(WCHAR) );
+        memcpy( buf, mod->FullDllName.Buffer, len * sizeof(WCHAR) );
+        buf[len] = 0;
+    }
+    LdrUnlockLoaderLock( 0, magic );
+    return len;
+}
+
+static BOOL is_quickenpatch(void)
+{
+    static const WCHAR qkn[] = {'q','u','i','c','k','e','n','P','a','t','c','h','.','e','x','e',0};
+    WCHAR path[MAX_PATH];
+    DWORD len = sizeof(qkn)/sizeof(qkn[0]) - 1, len2 = get_module_filename( path, MAX_PATH );
+    return (len <= len2 && !strcmpiW( path + len2 - len, qkn ));
+}
 
 /******************************************************************************
  *  NtReadFile					[NTDLL.@]
@@ -819,7 +863,7 @@ static NTSTATUS register_async_file_read( HANDLE handle, HANDLE event,
  *           The number of bytes read.
  *  Failure: An NTSTATUS error code describing the error.
  */
-NTSTATUS WINAPI NtReadFile(HANDLE hFile, HANDLE hEvent,
+NTSTATUS WINAPI rpc_NtReadFile(HANDLE hFile, HANDLE hEvent,
                            PIO_APC_ROUTINE apc, void* apc_user,
                            PIO_STATUS_BLOCK io_status, void* buffer, ULONG length,
                            PLARGE_INTEGER offset, PULONG key)
@@ -862,6 +906,9 @@ NTSTATUS WINAPI NtReadFile(HANDLE hFile, HANDLE hEvent,
             /* async I/O doesn't make sense on regular files */
             while ((result = virtual_locked_pread( unix_handle, buffer, length, offset->QuadPart )) == -1)
             {
+                /* CrossOver hack 14664 */
+                if (errno == EFAULT && is_quickenpatch() && virtual_check_buffer_for_write( buffer, length ))
+                    continue;
                 if (errno != EINTR)
                 {
                     status = FILE_GetNtStatus();
@@ -936,6 +983,9 @@ NTSTATUS WINAPI NtReadFile(HANDLE hFile, HANDLE hEvent,
         else if (errno != EAGAIN)
         {
             if (errno == EINTR) continue;
+            /* CrossOver hack 14664 */
+            if (errno == EFAULT && is_quickenpatch() && virtual_check_buffer_for_write( buffer, length ))
+                continue;
             if (!total) status = FILE_GetNtStatus();
             goto err;
         }
@@ -1016,6 +1066,13 @@ err:
     return ret_status;
 }
 
+NTSTATUS WINAPI NtReadFile(HANDLE hFile, HANDLE hEvent,
+                           PIO_APC_ROUTINE apc, void* apc_user,
+                           PIO_STATUS_BLOCK io_status, void* buffer, ULONG length,
+                           PLARGE_INTEGER offset, PULONG key)
+{
+    return rpc_NtReadFile(hFile, hEvent, apc, apc_user, io_status, buffer, length, offset, key);
+}
 
 /******************************************************************************
  *  NtReadFileScatter   [NTDLL.@]
@@ -1907,10 +1964,9 @@ static int futimens( int fd, const struct timespec spec[2] )
 #define UTIME_OMIT ((1 << 30) - 2)
 #endif
 
-static NTSTATUS set_file_times( int fd, const LARGE_INTEGER *mtime, const LARGE_INTEGER *atime )
+static BOOL set_file_times_precise( int fd, const LARGE_INTEGER *mtime,
+        const LARGE_INTEGER *atime, NTSTATUS *status )
 {
-    NTSTATUS status = STATUS_SUCCESS;
-
 #ifdef HAVE_FUTIMENS
     struct timespec tv[2];
 
@@ -1926,12 +1982,29 @@ static NTSTATUS set_file_times( int fd, const LARGE_INTEGER *mtime, const LARGE_
         tv[1].tv_sec = mtime->QuadPart / 10000000 - SECS_1601_TO_1970;
         tv[1].tv_nsec = (mtime->QuadPart % 10000000) * 100;
     }
-    if (futimens( fd, tv ) == -1) status = FILE_GetNtStatus();
+#ifdef __APPLE__
+    if (!&futimens) return FALSE;
+#endif
+    if (futimens( fd, tv ) == -1) *status = FILE_GetNtStatus();
+    else *status = STATUS_SUCCESS;
+    return TRUE;
+#else
+    return FALSE;
+#endif
+}
 
-#elif defined(HAVE_FUTIMES) || defined(HAVE_FUTIMESAT)
+static NTSTATUS set_file_times( int fd, const LARGE_INTEGER *mtime, const LARGE_INTEGER *atime )
+{
+    NTSTATUS status = STATUS_SUCCESS;
+#if defined(HAVE_FUTIMES) || defined(HAVE_FUTIMESAT)
     struct timeval tv[2];
     struct stat st;
+#endif
 
+    if (set_file_times_precise( fd, mtime, atime, &status ))
+        return status;
+
+#if defined(HAVE_FUTIMES) || defined(HAVE_FUTIMESAT)
     if (!atime->QuadPart || !mtime->QuadPart)
     {
 

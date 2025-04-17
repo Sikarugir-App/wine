@@ -50,6 +50,7 @@ unsigned int MSVCRT___setlc_active = 0;
 unsigned int MSVCRT___unguarded_readlc_active = 0;
 double MSVCRT__HUGE = 0;
 char **MSVCRT___argv = NULL;
+static char **argv_WIN32PTR = NULL;
 static char **argv_expand;
 MSVCRT_wchar_t **MSVCRT___wargv = NULL;
 static MSVCRT_wchar_t **wargv_expand;
@@ -329,7 +330,25 @@ void msvcrt_init_args(void)
   MSVCRT__acmdln = MSVCRT__strdup( GetCommandLineA() );
   MSVCRT__wcmdln = msvcrt_wstrdupa(MSVCRT__acmdln);
   MSVCRT___argc = __wine_main_argc;
-  MSVCRT___argv = __wine_main_argv;
+#ifdef __i386_on_x86_64__
+  {
+    char *p;
+    size_t len = 0;
+    for (int i = 0; i < __wine_main_argc; ++i)
+      len += strlen(__wine_main_argv[i]) + 1;
+    argv_WIN32PTR = HeapAlloc(GetProcessHeap(), 0, (__wine_main_argc + 1) * sizeof(*argv_WIN32PTR) + len);
+    p = (char*)argv_WIN32PTR + (__wine_main_argc + 1) * sizeof(*argv_WIN32PTR);
+    for (int i = 0; i < __wine_main_argc; ++i)
+    {
+      argv_WIN32PTR[i] = p;
+      p = stpcpy(p, __wine_main_argv[i]) + 1;
+    }
+    argv_WIN32PTR[__wine_main_argc] = NULL;
+  }
+#else
+  argv_WIN32PTR = __wine_main_argv;
+#endif
+  MSVCRT___argv = argv_WIN32PTR;
   MSVCRT___wargv = __wine_main_wargv;
 
   TRACE("got %s, wide = %s argc=%d\n", debugstr_a(MSVCRT__acmdln),
@@ -390,6 +409,8 @@ void msvcrt_free_args(void)
   HeapFree(GetProcessHeap(), 0, MSVCRT__wpgmptr);
   HeapFree(GetProcessHeap(), 0, argv_expand);
   HeapFree(GetProcessHeap(), 0, wargv_expand);
+  if (argv_WIN32PTR != __wine_main_argv)
+    HeapFree(GetProcessHeap(), 0, argv_WIN32PTR);
 }
 
 static int build_expanded_argv(int *argc, char **argv)
@@ -404,16 +425,16 @@ static int build_expanded_argv(int *argc, char **argv)
         int len = 0;
 
         is_expandable = FALSE;
-        for(path_len = strlen(__wine_main_argv[i])-1; path_len>=0; path_len--) {
-            if(__wine_main_argv[i][path_len]=='*' || __wine_main_argv[i][path_len]=='?')
+        for(path_len = strlen(argv_WIN32PTR[i])-1; path_len>=0; path_len--) {
+            if(argv_WIN32PTR[i][path_len]=='*' || argv_WIN32PTR[i][path_len]=='?')
                 is_expandable = TRUE;
-            else if(__wine_main_argv[i][path_len]=='\\' || __wine_main_argv[i][path_len]=='/')
+            else if(argv_WIN32PTR[i][path_len]=='\\' || argv_WIN32PTR[i][path_len]=='/')
                 break;
         }
         path_len++;
 
         if(is_expandable)
-            h = FindFirstFileA(__wine_main_argv[i], &data);
+            h = FindFirstFileA(argv_WIN32PTR[i], &data);
         else
             h = INVALID_HANDLE_VALUE;
 
@@ -426,7 +447,7 @@ static int build_expanded_argv(int *argc, char **argv)
                 len = strlen(data.cFileName)+1;
                 if(argv) {
                     argv[args_no] = (char*)(argv+*argc+1)+size;
-                    memcpy(argv[args_no], __wine_main_argv[i], path_len*sizeof(char));
+                    memcpy(argv[args_no], argv_WIN32PTR[i], path_len*sizeof(char));
                     memcpy(argv[args_no]+path_len, data.cFileName, len*sizeof(char));
                 }
                 args_no++;
@@ -436,10 +457,10 @@ static int build_expanded_argv(int *argc, char **argv)
         }
 
         if(!len) {
-            len = strlen(__wine_main_argv[i])+1;
+            len = strlen(argv_WIN32PTR[i])+1;
             if(argv) {
                 argv[args_no] = (char*)(argv+*argc+1)+size;
-                memcpy(argv[args_no], __wine_main_argv[i], len*sizeof(char));
+                memcpy(argv[args_no], argv_WIN32PTR[i], len*sizeof(char));
             }
             args_no++;
             size += len;
@@ -478,7 +499,7 @@ int CDECL __getmainargs(int *argc, char** *argv, char** *envp,
     }
     if (!expand_wildcards) {
         MSVCRT___argc = __wine_main_argc;
-        MSVCRT___argv = __wine_main_argv;
+        MSVCRT___argv = argv_WIN32PTR;
     }
 
     *argc = MSVCRT___argc;

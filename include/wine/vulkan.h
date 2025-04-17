@@ -45,6 +45,11 @@
 #ifdef WINE_VK_HOST
 #define VKAPI_CALL
 #define WINE_VK_ALIGN(x)
+#define VKPTR HOSTPTR
+#include <wine/hostaddrspace_enter.h>
+#else
+#define VKPTR
+#include <wine/winheader_enter.h>
 #endif
 
 #ifndef VKAPI_CALL
@@ -5890,5 +5895,11 @@ void VKAPI_CALL vkUpdateDescriptorSetWithTemplateKHR(VkDevice device, VkDescript
 void VKAPI_CALL vkUpdateDescriptorSets(VkDevice device, uint32_t descriptorWriteCount, const VkWriteDescriptorSet *pDescriptorWrites, uint32_t descriptorCopyCount, const VkCopyDescriptorSet *pDescriptorCopies);
 VkResult VKAPI_CALL vkWaitForFences(VkDevice device, uint32_t fenceCount, const VkFence *pFences, VkBool32 waitAll, uint64_t timeout);
 #endif /* VK_NO_PROTOTYPES */
+
+#ifdef WINE_VK_HOST
+#include <wine/hostaddrspace_exit.h>
+#else
+#include <wine/winheader_exit.h>
+#endif
 
 #endif /* __WINE_VULKAN_H */

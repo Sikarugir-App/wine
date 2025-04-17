@@ -1672,7 +1672,7 @@ static void dump_extension(const CERT_EXTENSION *ext)
         dump_netscape_cert_type(ext);
 }
 
-static LPCSTR filetime_to_str(const FILETIME *time)
+static const char * HOSTPTR filetime_to_str(const FILETIME *time)
 {
     char date[80];
     char dateFmt[80]; /* sufficient for all versions of LOCALE_SSHORTDATE */
@@ -2210,7 +2210,7 @@ static BOOL CRYPT_BuildSimpleChain(const CertificateChainEngine *engine,
     return ret;
 }
 
-static LPCSTR debugstr_filetime(LPFILETIME pTime)
+static const char * HOSTPTR debugstr_filetime(LPFILETIME pTime)
 {
     if (!pTime)
         return "(nil)";

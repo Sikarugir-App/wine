@@ -406,7 +406,7 @@ static HRESULT AVISplitter_Sample(LPVOID iface, IMediaSample * pSample, DWORD_PT
      * That thread should also not have a sample queued at the moment
      */
     /* Debugging */
-    TRACE("(%p)->(%p size: %u, %lu)\n", This, pSample, IMediaSample_GetActualDataLength(pSample), cookie);
+    TRACE("(%p)->(%p size: %u, %lu)\n", This, pSample, IMediaSample_GetActualDataLength(pSample), (unsigned long)cookie);
     assert(cookie < This->Parser.cStreams);
     assert(!stream->sample);
     assert(WaitForSingleObject(stream->packet_queued, 0) == WAIT_TIMEOUT);

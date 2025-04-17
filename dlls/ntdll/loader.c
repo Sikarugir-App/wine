@@ -102,6 +102,12 @@ typedef struct _wine_modref
     int                   alloc_deps;
     int                   nDeps;
     struct _wine_modref **deps;
+#ifdef __i386_on_x86_64__
+    void        * HOSTPTR section_handle;
+#   define MOD_SECTION_HANDLE(wm) wm->section_handle
+#else
+#   define MOD_SECTION_HANDLE(wm) wm->ldr.SectionHandle
+#endif
 } WINE_MODREF;
 
 /* info about the current builtin dll load */
@@ -137,9 +143,9 @@ static WINE_MODREF *last_failed_modref;
 static NTSTATUS load_dll( LPCWSTR load_path, LPCWSTR libname, DWORD flags, WINE_MODREF** pwm );
 static NTSTATUS process_attach( WINE_MODREF *wm, LPVOID lpReserved );
 static FARPROC find_ordinal_export( HMODULE module, const IMAGE_EXPORT_DIRECTORY *exports,
-                                    DWORD exp_size, DWORD ordinal, LPCWSTR load_path );
+                                    DWORD exp_size, DWORD ordinal, LPCWSTR load_path, BOOL hybrid );
 static FARPROC find_named_export( HMODULE module, const IMAGE_EXPORT_DIRECTORY *exports,
-                                  DWORD exp_size, const char *name, int hint, LPCWSTR load_path );
+                                  DWORD exp_size, const char *name, int hint, LPCWSTR load_path, BOOL hybrid );
 
 /* convert PE image VirtualAddress to Real Address */
 static inline void *get_rva( HMODULE module, DWORD va )
@@ -154,7 +160,7 @@ static inline BOOL contains_path( LPCWSTR name )
 }
 
 /* convert from straight ASCII to Unicode without depending on the current codepage */
-static inline void ascii_to_unicode( WCHAR *dst, const char *src, size_t len )
+static inline void ascii_to_unicode( WCHAR *dst, const char * HOSTPTR src, size_t len )
 {
     while (len--) *dst++ = (unsigned char)*src++;
 }
@@ -253,7 +259,47 @@ __ASM_GLOBAL_FUNC(call_dll_entry_point,
                   __ASM_CFI(".cfi_def_cfa %esp,4\n\t")
                   __ASM_CFI(".cfi_same_value %ebp\n\t")
                   "ret" )
-#else /* __i386__ */
+#elif defined(__i386_on_x86_64__)
+__ASM_GLOBAL_FUNC32(__ASM_THUNK_NAME(call_dll_entry_point),
+                    "pushl %ebp\n\t"
+                    __ASM_CFI(".cfi_adjust_cfa_offset 4\n\t")
+                    __ASM_CFI(".cfi_rel_offset %ebp,0\n\t")
+                    "movl %esp,%ebp\n\t"
+                    __ASM_CFI(".cfi_def_cfa_register %ebp\n\t")
+                    "pushl %ebx\n\t"
+                    __ASM_CFI(".cfi_rel_offset %ebx,-4\n\t")
+                    "pushl %esi\n\t"
+                    __ASM_CFI(".cfi_rel_offset %esi,-8\n\t")
+                    "pushl %edi\n\t"
+                    __ASM_CFI(".cfi_rel_offset %edi,-12\n\t")
+                    "movl %ebp,%esi\n\t"
+                    __ASM_CFI(".cfi_def_cfa_register %esi\n\t")
+                    "pushl 20(%ebp)\n\t"
+                    "pushl 16(%ebp)\n\t"
+                    "pushl 12(%ebp)\n\t"
+                    "movl 8(%ebp),%eax\n\t"
+                    "call *%eax\n\t"
+                    "movl %esi,%ebp\n\t"
+                    __ASM_CFI(".cfi_def_cfa_register %ebp\n\t")
+                    "leal -12(%ebp),%esp\n\t"
+                    "popl %edi\n\t"
+                    __ASM_CFI(".cfi_same_value %edi\n\t")
+                    "popl %esi\n\t"
+                    __ASM_CFI(".cfi_same_value %esi\n\t")
+                    "popl %ebx\n\t"
+                    __ASM_CFI(".cfi_same_value %ebx\n\t")
+                    "popl %ebp\n\t"
+                    __ASM_CFI(".cfi_def_cfa %esp,4\n\t")
+                    __ASM_CFI(".cfi_same_value %ebp\n\t")
+                    "ret" )
+BOOL CDECL DECLSPEC_HIDDEN call_dll_entry_point( DLLENTRYPROC proc, void *module, UINT reason, void *reserved )
+{
+    if (wine_is_thunk32to64( proc ))
+        return proc( module, reason, reserved );
+    else
+        return WINE_CALL_IMPL32(call_dll_entry_point)( proc, module, reason, reserved );
+}
+#else
 static inline BOOL call_dll_entry_point( DLLENTRYPROC proc, void *module,
                                          UINT reason, void *reserved )
 {
@@ -262,7 +308,7 @@ static inline BOOL call_dll_entry_point( DLLENTRYPROC proc, void *module,
 #endif /* __i386__ */
 
 
-#if defined(__i386__) || defined(__x86_64__) || defined(__arm__) || defined(__aarch64__)
+#if defined(__i386__) || defined(__x86_64__) || defined(__i386_on_x86_64__) || defined(__arm__) || defined(__aarch64__)
 /*************************************************************************
  *		stub_entry_point
  *
@@ -284,7 +330,7 @@ static void stub_entry_point( const char *dll, const char *name, void *ret_addr 
 
 
 #include "pshpack1.h"
-#ifdef __i386__
+#if defined(__i386__) || defined(__i386_on_x86_64__)
 struct stub
 {
     BYTE        pushl1;     /* pushl $name */
@@ -354,7 +400,7 @@ static ULONG_PTR allocate_stub( const char *dll, const char *name )
             return 0xdeadbeef;
     }
     stub = &stubs[nb_stubs++];
-#ifdef __i386__
+#if defined(__i386__) || defined(__i386_on_x86_64__)
     stub->pushl1    = 0x68;  /* pushl $name */
     stub->name      = name;
     stub->pushl2    = 0x68;  /* pushl $dll */
@@ -544,7 +590,7 @@ static WINE_MODREF *find_fileid_module( struct stat *st )
  * Find a module from its so file handle.
  * The loader_section must be locked while calling this function
  */
-static WINE_MODREF *find_so_module( void *handle )
+static WINE_MODREF *find_so_module( void * HOSTPTR handle )
 {
     LIST_ENTRY *mark, *entry;
 
@@ -554,9 +600,19 @@ static WINE_MODREF *find_so_module( void *handle )
         LDR_MODULE *mod = CONTAINING_RECORD( entry, LDR_MODULE, InLoadOrderModuleList );
         WINE_MODREF *wm = CONTAINING_RECORD( mod, WINE_MODREF, ldr );
 
-        if (mod->Flags & LDR_WINE_INTERNAL && mod->SectionHandle == handle) return wm;
+        if (mod->Flags & LDR_WINE_INTERNAL && MOD_SECTION_HANDLE(wm) == handle) return wm;
     }
     return NULL;
+}
+
+
+static BOOL is_hybrid_module( const WINE_MODREF *wm )
+{
+#ifdef __i386_on_x86_64__
+    return (wm->ldr.Flags & LDR_WINE_INTERNAL) && wm->section_handle;
+#else
+    return FALSE;
+#endif
 }
 
 
@@ -566,7 +622,7 @@ static WINE_MODREF *find_so_module( void *handle )
  * Find the final function pointer for a forwarded function.
  * The loader_section must be locked while calling this function.
  */
-static FARPROC find_forwarded_export( HMODULE module, const char *forward, LPCWSTR load_path )
+static FARPROC find_forwarded_export( HMODULE module, const char *forward, LPCWSTR load_path, BOOL hybrid )
 {
     const IMAGE_EXPORT_DIRECTORY *exports;
     DWORD exp_size;
@@ -574,6 +630,7 @@ static FARPROC find_forwarded_export( HMODULE module, const char *forward, LPCWS
     WCHAR mod_name[32];
     const char *end = strrchr(forward, '.');
     FARPROC proc = NULL;
+    int import_hybrid = 0;
 
     if (!end) return NULL;
     if ((end - forward) * sizeof(WCHAR) >= sizeof(mod_name)) return NULL;
@@ -620,22 +677,36 @@ static FARPROC find_forwarded_export( HMODULE module, const char *forward, LPCWS
             return NULL;
         }
     }
+    if (hybrid) import_hybrid = is_hybrid_module(wm);
     if ((exports = RtlImageDirectoryEntryToData( wm->ldr.BaseAddress, TRUE,
                                                  IMAGE_DIRECTORY_ENTRY_EXPORT, &exp_size )))
     {
         const char *name = end + 1;
-        if (*name == '#')  /* ordinal */
-            proc = find_ordinal_export( wm->ldr.BaseAddress, exports, exp_size, atoi(name+1), load_path );
+        if (!hybrid || import_hybrid)
+        {
+            if (*name == '#')  /* ordinal */
+                proc = find_ordinal_export( wm->ldr.BaseAddress, exports, exp_size, atoi(name+1), load_path, hybrid );
+            else
+                proc = find_named_export( wm->ldr.BaseAddress, exports, exp_size, name, -1, load_path, hybrid );
+        }
         else
-            proc = find_named_export( wm->ldr.BaseAddress, exports, exp_size, name, -1, load_path );
+        {
+            proc = NULL;
+        }
     }
 
     if (!proc)
     {
-        ERR("function not found for forward '%s' used by %s."
-            " If you are using builtin %s, try using the native one instead.\n",
-            forward, debugstr_w(get_modref(module)->ldr.FullDllName.Buffer),
-            debugstr_w(get_modref(module)->ldr.BaseDllName.Buffer) );
+        if (hybrid)
+            TRACE(" 64-bit implement not found for forward '%s' used by %s."
+                  " %s may be a 32-bit native PE DLL.\n",
+                  forward, debugstr_w(get_modref(module)->ldr.FullDllName.Buffer),
+                  debugstr_w(wm->ldr.BaseDllName.Buffer) );
+        else
+            ERR("function not found for forward '%s' used by %s."
+                " If you are using builtin %s, try using the native one instead.\n",
+                forward, debugstr_w(get_modref(module)->ldr.FullDllName.Buffer),
+                debugstr_w(get_modref(module)->ldr.BaseDllName.Buffer) );
     }
     return proc;
 }
@@ -649,24 +720,30 @@ static FARPROC find_forwarded_export( HMODULE module, const char *forward, LPCWS
  * The loader_section must be locked while calling this function.
  */
 static FARPROC find_ordinal_export( HMODULE module, const IMAGE_EXPORT_DIRECTORY *exports,
-                                    DWORD exp_size, DWORD ordinal, LPCWSTR load_path )
+                                    DWORD exp_size, DWORD ordinal, LPCWSTR load_path, BOOL hybrid )
 {
     FARPROC proc;
     const DWORD *functions = get_rva( module, exports->AddressOfFunctions );
+    DWORD index;
 
     if (ordinal >= exports->NumberOfFunctions)
     {
-        TRACE("	ordinal %d out of range!\n", ordinal + exports->Base );
+        if (hybrid)
+            TRACE("	index %d out of range!\n", ordinal );
+        else
+            TRACE("	ordinal %d out of range!\n", ordinal + exports->Base );
         return NULL;
     }
-    if (!functions[ordinal]) return NULL;
+    index = ordinal;
+    if (hybrid) index += exports->NumberOfFunctions;
+    if (!functions[index]) return NULL;
 
-    proc = get_rva( module, functions[ordinal] );
+    proc = get_rva( module, functions[index] );
 
     /* if the address falls into the export dir, it's a forward */
     if (((const char *)proc >= (const char *)exports) && 
         ((const char *)proc < (const char *)exports + exp_size))
-        return find_forwarded_export( module, (const char *)proc, load_path );
+        return find_forwarded_export( module, (const char *)proc, load_path, hybrid );
 
     if (TRACE_ON(snoop))
     {
@@ -689,7 +766,7 @@ static FARPROC find_ordinal_export( HMODULE module, const IMAGE_EXPORT_DIRECTORY
  * The loader_section must be locked while calling this function.
  */
 static FARPROC find_named_export( HMODULE module, const IMAGE_EXPORT_DIRECTORY *exports,
-                                  DWORD exp_size, const char *name, int hint, LPCWSTR load_path )
+                                  DWORD exp_size, const char *name, int hint, LPCWSTR load_path, BOOL hybrid )
 {
     const WORD *ordinals = get_rva( module, exports->AddressOfNameOrdinals );
     const DWORD *names = get_rva( module, exports->AddressOfNames );
@@ -700,7 +777,7 @@ static FARPROC find_named_export( HMODULE module, const IMAGE_EXPORT_DIRECTORY *
     {
         char *ename = get_rva( module, names[hint] );
         if (!strcmp( ename, name ))
-            return find_ordinal_export( module, exports, exp_size, ordinals[hint], load_path );
+            return find_ordinal_export( module, exports, exp_size, ordinals[hint], load_path, hybrid );
     }
 
     /* then do a binary search */
@@ -709,13 +786,66 @@ static FARPROC find_named_export( HMODULE module, const IMAGE_EXPORT_DIRECTORY *
         int res, pos = (min + max) / 2;
         char *ename = get_rva( module, names[pos] );
         if (!(res = strcmp( ename, name )))
-            return find_ordinal_export( module, exports, exp_size, ordinals[pos], load_path );
+            return find_ordinal_export( module, exports, exp_size, ordinals[pos], load_path, hybrid );
         if (res > 0) max = pos - 1;
         else min = pos + 1;
     }
     return NULL;
-
 }
+
+
+#ifdef __i386_on_x86_64__
+
+FARPROC CDECL __wine_get_extra_proc( HMODULE module, LPCSTR function )
+{
+    IMAGE_EXPORT_DIRECTORY *exports;
+    DWORD exp_size;
+    FARPROC proc = NULL;
+
+    if (!module) module = NtCurrentTeb()->Peb->ImageBaseAddress;
+    RtlEnterCriticalSection( &loader_section );
+
+    /* check if the module itself is invalid to return the proper error */
+    if (!get_modref( module )) proc = NULL;
+    else if ((exports = RtlImageDirectoryEntryToData( module, TRUE,
+                                                      IMAGE_DIRECTORY_ENTRY_EXPORT, &exp_size )))
+    {
+        LPCWSTR load_path = NtCurrentTeb()->Peb->ProcessParameters->DllPath.Buffer;
+        if ((ULONG_PTR)function >> 16)
+        {
+            ANSI_STRING name;
+            RtlInitAnsiString( &name, function );
+            proc = find_named_export( module, exports, exp_size, name.Buffer, -1, load_path, TRUE );
+        }
+        else
+        {
+            proc = find_ordinal_export( module, exports, exp_size, LOWORD(function) - exports->Base, load_path, TRUE );
+        }
+    }
+
+    RtlLeaveCriticalSection( &loader_section );
+    return proc;
+}
+
+
+int CDECL __wine_is_module_hybrid( HMODULE module )
+{
+    WINE_MODREF *wm;
+    int ret = 0;
+
+    RtlEnterCriticalSection( &loader_section );
+
+    if (!(wm = get_modref( module )))
+        ret = 0;
+    else
+        ret = is_hybrid_module(wm);
+
+    RtlLeaveCriticalSection( &loader_section );
+
+    return ret;
+}
+
+#endif
 
 
 /*************************************************************************
@@ -731,14 +861,18 @@ static BOOL import_dll( HMODULE module, const IMAGE_IMPORT_DESCRIPTOR *descr, LP
     HMODULE imp_mod;
     const IMAGE_EXPORT_DIRECTORY *exports;
     DWORD exp_size;
-    const IMAGE_THUNK_DATA *import_list;
-    IMAGE_THUNK_DATA *thunk_list;
+    const IMAGE_THUNK_DATA *import_list, *extra_import_list;
+    IMAGE_THUNK_DATA *thunk_list, *extra_thunk_list;
     WCHAR buffer[32];
     const char *name = get_rva( module, descr->Name );
     DWORD len = strlen(name);
     PVOID protect_base;
     SIZE_T protect_size = 0;
     DWORD protect_old;
+#ifdef __i386_on_x86_64__
+    int module_hybrid = is_hybrid_module(get_modref(module));
+    int import_hybrid = 0;
+#endif
 
     thunk_list = get_rva( module, (DWORD)descr->FirstThunk );
     if (descr->u.OriginalFirstThunk)
@@ -787,6 +921,10 @@ static BOOL import_dll( HMODULE module, const IMAGE_IMPORT_DESCRIPTOR *descr, LP
     while (import_list[protect_size].u1.Ordinal) protect_size++;
     protect_base = thunk_list;
     protect_size *= sizeof(*thunk_list);
+#ifdef __i386_on_x86_64__
+    import_hybrid = is_hybrid_module(wmImp);
+    if (module_hybrid) protect_size *= 2;
+#endif
     NtProtectVirtualMemory( NtCurrentProcess(), &protect_base,
                             &protect_size, PAGE_READWRITE, &protect_old );
 
@@ -826,7 +964,7 @@ static BOOL import_dll( HMODULE module, const IMAGE_IMPORT_DESCRIPTOR *descr, LP
             int ordinal = IMAGE_ORDINAL(import_list->u1.Ordinal);
 
             thunk_list->u1.Function = (ULONG_PTR)find_ordinal_export( imp_mod, exports, exp_size,
-                                                                      ordinal - exports->Base, load_path );
+                                                                      ordinal - exports->Base, load_path, FALSE );
             if (!thunk_list->u1.Function)
             {
                 thunk_list->u1.Function = allocate_stub( name, IntToPtr(ordinal) );
@@ -842,7 +980,7 @@ static BOOL import_dll( HMODULE module, const IMAGE_IMPORT_DESCRIPTOR *descr, LP
             pe_name = get_rva( module, (DWORD)import_list->u1.AddressOfData );
             thunk_list->u1.Function = (ULONG_PTR)find_named_export( imp_mod, exports, exp_size,
                                                                     (const char*)pe_name->Name,
-                                                                    pe_name->Hint, load_path );
+                                                                    pe_name->Hint, load_path, FALSE );
             if (!thunk_list->u1.Function)
             {
                 thunk_list->u1.Function = allocate_stub( name, (const char*)pe_name->Name );
@@ -856,6 +994,46 @@ static BOOL import_dll( HMODULE module, const IMAGE_IMPORT_DESCRIPTOR *descr, LP
         import_list++;
         thunk_list++;
     }
+
+#ifdef __i386_on_x86_64__
+    if (module_hybrid)
+    {
+        /* fill the additional import table */
+        extra_import_list = import_list + 1;
+        extra_thunk_list = thunk_list + 1;
+        while (extra_import_list->u1.Ordinal)
+        {
+            if (import_hybrid && !TRACE_ON(relay))
+            {
+
+                if (IMAGE_SNAP_BY_ORDINAL(extra_import_list->u1.Ordinal))
+                {
+                    int ordinal = IMAGE_ORDINAL(extra_import_list->u1.Ordinal);
+
+                    extra_thunk_list->u1.Function = (ULONG_PTR)find_ordinal_export( imp_mod, exports, exp_size,
+                                                                                    ordinal - exports->Base, load_path, TRUE );
+                    TRACE_(imports)("extra imports --- Ordinal %s.%d = %p\n", name, ordinal, (void *)extra_thunk_list->u1.Function );
+                }
+                else  /* import by name */
+                {
+                    IMAGE_IMPORT_BY_NAME *pe_name;
+                    pe_name = get_rva( module, (DWORD)extra_import_list->u1.AddressOfData );
+                    extra_thunk_list->u1.Function = (ULONG_PTR)find_named_export( imp_mod, exports, exp_size,
+                                                                                  (const char*)pe_name->Name,
+                                                                                  pe_name->Hint, load_path, TRUE );
+                    TRACE_(imports)("extra imports --- %s %s.%d = %p\n",
+                                    pe_name->Name, name, pe_name->Hint, (void *)extra_thunk_list->u1.Function);
+                }
+            }
+            else
+            {
+                extra_thunk_list->u1.Function = 0;
+            }
+            extra_import_list++;
+            extra_thunk_list++;
+        }
+    }
+#endif
 
 done:
     /* restore old protection of the import address table */
@@ -980,7 +1158,7 @@ static SHORT alloc_tls_slot( LDR_MODULE *mod )
             if (!new) return -1;
             if (old) memcpy( new, old, tls_module_count * sizeof(*new) );
             teb->ThreadLocalStoragePointer = new;
-#if defined(__APPLE__) && defined(__x86_64__)
+#if defined(__APPLE__) && defined(__x86_64__) && !defined(__i386_on_x86_64__)
             if (teb->Reserved5[0])
                 ((TEB*)teb->Reserved5[0])->ThreadLocalStoragePointer = new;
 #endif
@@ -1069,7 +1247,7 @@ static NTSTATUS fixup_imports_ilonly( WINE_MODREF *wm, LPCWSTR load_path, void *
                                                  IMAGE_DIRECTORY_ENTRY_EXPORT, &exp_size )))
     {
         const char *name = (wm->ldr.Flags & LDR_IMAGE_IS_DLL) ? "_CorDllMain" : "_CorExeMain";
-        proc = find_named_export( imp->ldr.BaseAddress, exports, exp_size, name, -1, load_path );
+        proc = find_named_export( imp->ldr.BaseAddress, exports, exp_size, name, -1, load_path, FALSE );
     }
     if (!proc) return STATUS_PROCEDURE_NOT_FOUND;
     *entry = proc;
@@ -1222,7 +1400,7 @@ static NTSTATUS alloc_thread_tls(void)
                GetCurrentThreadId(), i, size, dir->SizeOfZeroFill, pointers[i] );
     }
     NtCurrentTeb()->ThreadLocalStoragePointer = pointers;
-#if defined(__APPLE__) && defined(__x86_64__)
+#if defined(__APPLE__) && defined(__x86_64__) && !defined(__i386_on_x86_64__)
     __asm__ volatile (".byte 0x65\n\tmovq %0,%c1"
                       :
                       : "r" (pointers), "n" (FIELD_OFFSET(TEB, ThreadLocalStoragePointer)));
@@ -1696,8 +1874,8 @@ NTSTATUS WINAPI LdrGetProcedureAddress(HMODULE module, const ANSI_STRING *name,
                                                       IMAGE_DIRECTORY_ENTRY_EXPORT, &exp_size )))
     {
         LPCWSTR load_path = NtCurrentTeb()->Peb->ProcessParameters->DllPath.Buffer;
-        void *proc = name ? find_named_export( module, exports, exp_size, name->Buffer, -1, load_path )
-                          : find_ordinal_export( module, exports, exp_size, ord - exports->Base, load_path );
+        void *proc = name ? find_named_export( module, exports, exp_size, name->Buffer, -1, load_path, FALSE )
+                          : find_ordinal_export( module, exports, exp_size, ord - exports->Base, load_path, FALSE );
         if (proc)
         {
             *address = proc;
@@ -1716,7 +1894,7 @@ NTSTATUS WINAPI LdrGetProcedureAddress(HMODULE module, const ANSI_STRING *name,
  * Build the full pathname for a builtin dll.
  */
 static BOOL get_builtin_fullname( UNICODE_STRING *nt_name, const UNICODE_STRING *path,
-                                  const char *filename )
+                                  const char * HOSTPTR filename )
 {
     static const WCHAR nt_prefixW[] = {'\\','?','?','\\',0};
     static const WCHAR soW[] = {'.','s','o',0};
@@ -1765,7 +1943,7 @@ static BOOL is_16bit_builtin( HMODULE module )
                                                   IMAGE_DIRECTORY_ENTRY_EXPORT, &exp_size )))
         return FALSE;
 
-    return find_named_export( module, exports, exp_size, "__wine_spec_dos_header", -1, NULL ) != NULL;
+    return find_named_export( module, exports, exp_size, "__wine_spec_dos_header", -1, NULL, FALSE ) != NULL;
 }
 
 
@@ -1774,7 +1952,7 @@ static BOOL is_16bit_builtin( HMODULE module )
  *
  * Load a library in memory; callback function for wine_dll_register
  */
-static void load_builtin_callback( void *module, const char *filename )
+static void load_builtin_callback( void *module, const char * HOSTPTR filename )
 {
     static const WCHAR emptyW[1];
     IMAGE_NT_HEADERS *nt;
@@ -1813,6 +1991,10 @@ static void load_builtin_callback( void *module, const char *filename )
         builtin_load_info->status = STATUS_NO_MEMORY;
         return;
     }
+
+#ifdef __i386_on_x86_64__
+    wm->section_handle = (void*)1;
+#endif
 
     if ((nt->FileHeader.Characteristics & IMAGE_FILE_DLL) ||
         nt->OptionalHeader.Subsystem == IMAGE_SUBSYSTEM_NATIVE ||
@@ -2033,7 +2215,7 @@ static BOOL convert_to_pe64( HMODULE module, const pe_image_info_t *info )
 /* but it cannot necessarily be loaded as a dll, so we need some additional checks */
 static BOOL is_valid_binary( HMODULE module, const pe_image_info_t *info )
 {
-#ifdef __i386__
+#if defined(__i386__) || defined(__i386_on_x86_64__)
     return info->machine == IMAGE_FILE_MACHINE_I386;
 #elif defined(__arm__)
     return info->machine == IMAGE_FILE_MACHINE_ARM ||
@@ -2060,6 +2242,14 @@ static BOOL is_valid_binary( HMODULE module, const pe_image_info_t *info )
 #endif
 }
 
+/* Use syscall thunks so that Office 2013/2016 has a chance to hook them */
+NTSTATUS WINAPI __syscall_NtOpenFile( PHANDLE handle, ACCESS_MASK access,
+                                      POBJECT_ATTRIBUTES attr, PIO_STATUS_BLOCK io,
+                                      ULONG sharing, ULONG options );
+NTSTATUS WINAPI __syscall_NtClose( HANDLE Handle );
+NTSTATUS WINAPI __syscall_NtCreateSection( HANDLE *handle, ACCESS_MASK access, const OBJECT_ATTRIBUTES *attr,
+                                           const LARGE_INTEGER *size, ULONG protect,
+                                           ULONG sec_flags, HANDLE file );
 
 /***********************************************************************
  *	open_dll_file
@@ -2091,7 +2281,7 @@ static NTSTATUS open_dll_file( UNICODE_STRING *nt_name, WINE_MODREF **pwm,
     attr.ObjectName = nt_name;
     attr.SecurityDescriptor = NULL;
     attr.SecurityQualityOfService = NULL;
-    if ((status = NtOpenFile( &handle, GENERIC_READ | SYNCHRONIZE, &attr, &io,
+    if ((status = SYSCALL(NtOpenFile)( &handle, GENERIC_READ | SYNCHRONIZE, &attr, &io,
                               FILE_SHARE_READ | FILE_SHARE_DELETE,
                               FILE_SYNCHRONOUS_IO_NONALERT | FILE_NON_DIRECTORY_FILE )))
     {
@@ -2114,7 +2304,7 @@ static NTSTATUS open_dll_file( UNICODE_STRING *nt_name, WINE_MODREF **pwm,
         {
             TRACE( "%s is the same file as existing module %p %s\n", debugstr_w( nt_name->Buffer ),
                    (*pwm)->ldr.BaseAddress, debugstr_w( (*pwm)->ldr.FullDllName.Buffer ));
-            NtClose( handle );
+            SYSCALL(NtClose)( handle );
             NtUnmapViewOfSection( NtCurrentProcess(), *module );
             *module = NULL;
             return STATUS_SUCCESS;
@@ -2122,10 +2312,10 @@ static NTSTATUS open_dll_file( UNICODE_STRING *nt_name, WINE_MODREF **pwm,
     }
 
     size.QuadPart = 0;
-    status = NtCreateSection( &mapping, STANDARD_RIGHTS_REQUIRED | SECTION_QUERY |
+    status = SYSCALL(NtCreateSection)( &mapping, STANDARD_RIGHTS_REQUIRED | SECTION_QUERY |
                               SECTION_MAP_READ | SECTION_MAP_EXECUTE,
                               NULL, &size, PAGE_EXECUTE_READ, SEC_IMAGE, handle );
-    NtClose( handle );
+    SYSCALL(NtClose)( handle );
 
     if (!status)
     {
@@ -2137,7 +2327,7 @@ static NTSTATUS open_dll_file( UNICODE_STRING *nt_name, WINE_MODREF **pwm,
         status = virtual_map_section( mapping, module, 0, 0, NULL, &len,
                                       PAGE_EXECUTE_READ, image_info );
         if (status == STATUS_IMAGE_NOT_AT_BASE) status = STATUS_SUCCESS;
-        NtClose( mapping );
+        SYSCALL(NtClose)( mapping );
     }
     if (!status && !is_valid_binary( *module, image_info ))
     {
@@ -2251,9 +2441,11 @@ static int check_library_arch( int fd )
     } header;
 
     if (read( fd, &header, sizeof(header) ) != sizeof(header)) return 1;
-    if (header.magic != 0xfeedface) return 1;
-    if (sizeof(void *) == sizeof(int)) return !(header.cputype >> 24);
-    else return (header.cputype >> 24) == 1; /* CPU_ARCH_ABI64 */
+    if (header.magic != 0xfeedface && header.magic != 0xfeedfacf) return 1;
+    if (sizeof(void *HOSTPTR) == sizeof(int))
+        return header.magic == 0xfeedface && (header.cputype >> 24) == 0;
+    else
+        return header.magic == 0xfeedfacf && (header.cputype >> 24) == 1; /* CPU_ARCH_ABI64 */
 #else
     struct  /* ELF header */
     {
@@ -2271,15 +2463,17 @@ static int check_library_arch( int fd )
 #else
     if (header.data != 1 /* ELFDATA2LSB */) return 1;
 #endif
-    if (sizeof(void *) == sizeof(int)) return header.class == 1; /* ELFCLASS32 */
+    if (sizeof(void *HOSTPTR) == sizeof(int)) return header.class == 1; /* ELFCLASS32 */
     else return header.class == 2; /* ELFCLASS64 */
 #endif
 }
 
-static inline char *prepend( char *buffer, const char *str, size_t len )
+
+static inline char *prepend( char *buffer, const char * HOSTPTR str, size_t len )
 {
     return memcpy( buffer - len, str, len );
 }
+
 
 /***********************************************************************
  *           open_builtin_file
@@ -2337,7 +2531,7 @@ static NTSTATUS find_builtin_dll( const WCHAR *name, WINE_MODREF **pwm,
                                   void **module, pe_image_info_t *image_info, struct stat *st,
                                   char **so_name )
 {
-    const char *path, *build_dir = wine_get_build_dir();
+    const char * HOSTPTR path, * HOSTPTR build_dir = wine_get_build_dir();
     unsigned int i, pos, len, namelen, maxlen = 0;
     char *ptr, *file;
     NTSTATUS status = STATUS_DLL_NOT_FOUND;
@@ -2410,9 +2604,10 @@ static NTSTATUS load_so_dll( LPCWSTR load_path, const UNICODE_STRING *nt_name,
                              const char *so_name, WINE_MODREF** pwm )
 {
     char error[256];
-    void *handle;
+    void * HOSTPTR handle;
     struct builtin_load_info info, *prev_info;
     ANSI_STRING unix_name;
+    int restore_redirect;
 
     if (so_name)
     {
@@ -2433,7 +2628,9 @@ static NTSTATUS load_so_dll( LPCWSTR load_path, const UNICODE_STRING *nt_name,
 
     prev_info = builtin_load_info;
     builtin_load_info = &info;
+    restore_redirect = wine_enable_dlopen_redirect(1);
     handle = wine_dlopen( so_name ? so_name : unix_name.Buffer, RTLD_NOW, error, sizeof(error) );
+    wine_enable_dlopen_redirect(restore_redirect);
     builtin_load_info = prev_info;
     RtlFreeHeap( GetProcessHeap(), 0, unix_name.Buffer );
 
@@ -2470,7 +2667,13 @@ static NTSTATUS load_so_dll( LPCWSTR load_path, const UNICODE_STRING *nt_name,
     {
         TRACE_(loaddll)( "Loaded %s at %p: builtin\n", debugstr_w(info.wm->ldr.FullDllName.Buffer), info.wm->ldr.BaseAddress );
         info.wm->ldr.LoadCount = 1;
+#ifdef __i386_on_x86_64__
+        info.wm->section_handle = handle;
+        /* Make a non-null SectionHandle */
+        info.wm->ldr.SectionHandle = &info.wm->section_handle;
+#else
         info.wm->ldr.SectionHandle = handle;
+#endif
     }
 
     *pwm = info.wm;
@@ -3257,6 +3460,24 @@ void* WINAPI LdrResolveDelayLoadedAPI( void* base, const IMAGE_DELAYLOAD_DESCRIP
         RtlInitAnsiString(&fnc, (char*)iibn->Name);
         nts = LdrGetProcedureAddress(*phmod, &fnc, 0, (void**)&fp);
     }
+
+#ifdef __i386_on_x86_64__
+    if (__wine_is_module_hybrid(base))
+    {
+        DWORD id2 = id;
+        while (pIAT[id2].u1.Function != 0) id2++;
+        id2 += addr - pIAT;
+        if (__wine_is_module_hybrid(*phmod))
+        {
+            pIAT[id2].u1.Function = (ULONG_PTR)__wine_get_extra_proc( *phmod, (LPCSTR)pINT[id2].u1.Function );
+        }
+        else
+        {
+            pIAT[id2].u1.Function = 0;
+        }
+    }
+#endif
+
     if (!nts)
     {
         pIAT[id].u1.Function = (ULONG_PTR)fp;
@@ -3387,8 +3608,8 @@ static void free_modref( WINE_MODREF *wm )
 
     free_tls_slot( &wm->ldr );
     RtlReleaseActivationContext( wm->ldr.ActivationContext );
-    if ((wm->ldr.Flags & LDR_WINE_INTERNAL) && wm->ldr.SectionHandle)
-        wine_dll_unload( wm->ldr.SectionHandle );
+    if ((wm->ldr.Flags & LDR_WINE_INTERNAL) && MOD_SECTION_HANDLE(wm))
+        wine_dll_unload( MOD_SECTION_HANDLE(wm) );
     NtUnmapViewOfSection( NtCurrentProcess(), wm->ldr.BaseAddress );
     if (cached_modref == wm) cached_modref = NULL;
     RtlFreeUnicodeString( &wm->ldr.FullDllName );
@@ -3529,6 +3750,36 @@ PIMAGE_NT_HEADERS WINAPI RtlImageNtHeader(HMODULE hModule)
     }
     __ENDTRY
     return ret;
+}
+
+
+/***********************************************************************
+ *           user_shared_data_init
+ *
+ * Initializes a user shared
+ */
+static void user_shared_data_init(void)
+{
+    void *addr = user_shared_data_external;
+    SIZE_T data_size = page_size;
+    ULONG old_prot;
+
+    /* initialize time fields */
+    __wine_user_shared_data();
+
+    /* invalidate high times to prevent race conditions */
+    user_shared_data->SystemTime.High2Time = 0;
+    user_shared_data->SystemTime.High1Time = -1;
+
+    user_shared_data->InterruptTime.High2Time = 0;
+    user_shared_data->InterruptTime.High1Time = -1;
+
+    user_shared_data->u.TickCount.High2Time  = 0;
+    user_shared_data->u.TickCount.High1Time  = -1;
+
+    /* copy to correct address and make it non accessible */
+    memcpy(user_shared_data_external, user_shared_data, sizeof(*user_shared_data));
+    NtProtectVirtualMemory( NtCurrentProcess(), &addr, &data_size, PAGE_NOACCESS, &old_prot );
 }
 
 
@@ -3782,18 +4033,20 @@ BOOL WINAPI DllMain( HINSTANCE inst, DWORD reason, LPVOID reserved )
     return TRUE;
 }
 
+void *Wow64Transition;
 
 /***********************************************************************
  *           __wine_process_init
  */
 void __wine_process_init(void)
 {
+    static const WCHAR wow64cpuW[] = {'w','o','w','6','4','c','p','u','.','d','l','l',0};
     static const WCHAR kernel32W[] = {'\\','?','?','\\','C',':','\\','w','i','n','d','o','w','s','\\',
                                       's','y','s','t','e','m','3','2','\\',
                                       'k','e','r','n','e','l','3','2','.','d','l','l',0};
     static const WCHAR globalflagW[] = {'G','l','o','b','a','l','F','l','a','g',0};
 
-    WINE_MODREF *wm;
+    WINE_MODREF *wm, *wow64cpu_wm;
     NTSTATUS status;
     ANSI_STRING func_name;
     UNICODE_STRING nt_name;
@@ -3817,6 +4070,13 @@ void __wine_process_init(void)
         MESSAGE( "wine: could not load kernel32.dll, status %x\n", status );
         exit(1);
     }
+
+    RtlInitUnicodeString( &nt_name, wow64cpuW );
+    if ((status = load_builtin_dll( NULL, &nt_name, 0, 0, &wow64cpu_wm )) == STATUS_SUCCESS)
+        Wow64Transition = wow64cpu_wm->ldr.BaseAddress;
+    else
+        WARN( "could not load wow64cpu.dll, status %#x\n", status );
+
     RtlInitAnsiString( &func_name, "__wine_kernel_init" );
     if ((status = LdrGetProcedureAddress( wm->ldr.BaseAddress, &func_name,
                                           0, (void **)&init_func )) != STATUS_SUCCESS)
@@ -3838,6 +4098,7 @@ void __wine_process_init(void)
     NtCurrentTeb()->Peb->LoaderLock = &loader_section;
     update_user_process_params( &wm->ldr.FullDllName );
     version_init( wm->ldr.FullDllName.Buffer );
+    user_shared_data_init();
     virtual_set_large_address_space();
 
     LdrQueryImageFileExecutionOptions( &wm->ldr.FullDllName, globalflagW, REG_DWORD,

@@ -27,6 +27,9 @@
 
 #include <time.h>
 #include <stdarg.h>
+#ifndef _VA_LIST_T /* Clang's stdarg.h guards with _VA_LIST, while Xcode's uses _VA_LIST_T */
+#define _VA_LIST_T
+#endif
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -189,6 +192,24 @@ static DWORD netconn_verify_cert(netconn_t *conn, PCCERT_CONTEXT cert, HCERTSTOR
             }
         }else {
             err = GetLastError();
+        }
+    }
+
+    if (err) /* CrossOver hack tracked by bug 6776 */
+    {
+        HKEY hkey;
+        DWORD type, value, size = sizeof(value);
+
+        /* @@ Wine registry key: HKCU\Software\Wine\wininet */
+        if (!RegOpenKeyA( HKEY_CURRENT_USER, "Software\\Wine\\wininet", &hkey ))
+        {
+            if (!RegQueryValueExA( hkey, "accept_invalid_certs", 0, &type, (BYTE *)&value, &size ) &&
+                type == REG_DWORD && value)
+            {
+                WARN("certificate is invalid, accepting it anyway\n");
+                err = ERROR_SUCCESS;
+            }
+            RegCloseKey( hkey );
         }
     }
 

@@ -2367,7 +2367,7 @@ static void draw_test_quad(struct wined3d_caps_gl_ctx *ctx, const struct wined3d
         "{\n"
         "    gl_FragData[0] = out_color;\n"
         "}\n";
-    const char *source[2];
+    const char *WINED3DPTR source[2];
     GLuint vs_id, fs_id;
     unsigned int i;
 

@@ -110,6 +110,8 @@ static BOOL process_attach( HMODULE module )
 
         if (LdrFindEntryForAddress( GetModuleHandleW( 0 ), &ldr ) || !(ldr->Flags & LDR_WINE_INTERNAL))
             LoadLibraryA( "krnl386.exe16" );
+        /* Codeweavers hack: native crypt32 installed by IE6 is buggy (bug 5259) */
+        set_entry_point( module, "RegisterWaitForSingleObjectEx", 0 );
     }
 
     /* finish the process initialisation for console bits, if needed */

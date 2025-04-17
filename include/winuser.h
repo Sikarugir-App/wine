@@ -19,6 +19,8 @@
 #ifndef _WINUSER_
 #define _WINUSER_
 
+#include "wine/winheader_enter.h"
+
 #if !defined(_USER32_)
 #define WINUSERAPI DECLSPEC_HIDDEN
 #else
@@ -4362,5 +4364,7 @@ WINUSERAPI BOOL CDECL __wine_send_input( HWND hwnd, const INPUT *input );
 #ifdef __cplusplus
 }
 #endif
+
+#include "wine/winheader_exit.h"
 
 #endif /* _WINUSER_ */

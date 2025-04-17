@@ -588,7 +588,6 @@ BOOL WINAPI WriteFile( HANDLE hFile, LPCVOID buffer, DWORD bytesToWrite,
     return TRUE;
 }
 
-
 /***********************************************************************
  *              GetOverlappedResult     (KERNEL32.@)
  *

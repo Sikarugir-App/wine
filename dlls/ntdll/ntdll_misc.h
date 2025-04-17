@@ -34,7 +34,13 @@
 
 #define MAX_DOS_DRIVES 26
 
-#if defined(__i386__) || defined(__x86_64__)
+#ifdef __i386_on_x86_64__
+#define SYSCALL(func) WINE_CALL_IMPL32(__syscall_##func)
+#else
+#define SYSCALL(func) __syscall_##func
+#endif
+
+#if defined(__i386__) || defined(__x86_64__) || defined(__i386_on_x86_64__)
 static const UINT_PTR page_size = 0x1000;
 #else
 extern UINT_PTR page_size DECLSPEC_HIDDEN;
@@ -175,7 +181,7 @@ extern NTSTATUS virtual_alloc_thread_stack( INITIAL_TEB *stack, SIZE_T reserve_s
 extern void virtual_clear_thread_stack( void *stack_end ) DECLSPEC_HIDDEN;
 extern BOOL virtual_handle_stack_fault( void *addr ) DECLSPEC_HIDDEN;
 extern BOOL virtual_is_valid_code_address( const void *addr, SIZE_T size ) DECLSPEC_HIDDEN;
-extern NTSTATUS virtual_handle_fault( LPCVOID addr, DWORD err, BOOL on_signal_stack ) DECLSPEC_HIDDEN;
+extern NTSTATUS virtual_handle_fault( const void * HOSTPTR addr, DWORD err, BOOL on_signal_stack ) DECLSPEC_HIDDEN;
 extern unsigned int virtual_locked_server_call( void *req_ptr ) DECLSPEC_HIDDEN;
 extern ssize_t virtual_locked_read( int fd, void *addr, size_t size ) DECLSPEC_HIDDEN;
 extern ssize_t virtual_locked_pread( int fd, void *addr, size_t size, off_t offset ) DECLSPEC_HIDDEN;
@@ -189,15 +195,19 @@ extern void virtual_set_large_address_space(void) DECLSPEC_HIDDEN;
 extern void virtual_fill_image_information( const pe_image_info_t *pe_info,
                                             SECTION_IMAGE_INFORMATION *info ) DECLSPEC_HIDDEN;
 extern struct _KUSER_SHARED_DATA *user_shared_data DECLSPEC_HIDDEN;
+extern struct _KUSER_SHARED_DATA *user_shared_data_external DECLSPEC_HIDDEN;
+extern void create_user_shared_data_thread(void) DECLSPEC_HIDDEN;
+extern BYTE* CDECL __wine_user_shared_data(void);
 
 /* completion */
 extern NTSTATUS NTDLL_AddCompletion( HANDLE hFile, ULONG_PTR CompletionValue,
                                      NTSTATUS CompletionStatus, ULONG Information, BOOL async) DECLSPEC_HIDDEN;
 
 /* code pages */
-extern int ntdll_umbstowcs(DWORD flags, const char* src, int srclen, WCHAR* dst, int dstlen) DECLSPEC_HIDDEN;
+extern int ntdll_umbstowcs(DWORD flags, const char* HOSTPTR src, int srclen, WCHAR* dst, int dstlen) DECLSPEC_HIDDEN;
 extern int ntdll_wcstoumbs(DWORD flags, const WCHAR* src, int srclen, char* dst, int dstlen,
                            const char* defchar, int *used ) DECLSPEC_HIDDEN;
+extern int ntdll_ambstowcs(WCHAR **dstptr, const char* HOSTPTR src) DECLSPEC_HIDDEN;
 
 extern int CDECL NTDLL__vsnprintf( char *str, SIZE_T len, const char *format, __ms_va_list args ) DECLSPEC_HIDDEN;
 extern int CDECL NTDLL__vsnwprintf( WCHAR *str, SIZE_T len, const WCHAR *format, __ms_va_list args ) DECLSPEC_HIDDEN;

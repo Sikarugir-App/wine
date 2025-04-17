@@ -2304,7 +2304,7 @@ static HRESULT all_renderers_seek(IFilterGraphImpl *This, fnFoundSeek FoundSeek,
     HRESULT hr, hr_return = S_OK;
     struct filter *filter;
 
-    TRACE("(%p)->(%p %08lx)\n", This, FoundSeek, arg);
+    TRACE("(%p)->(%p %08lx)\n", This, FoundSeek, (unsigned long)arg);
     /* Send a message to all renderers, they are responsible for broadcasting it further */
 
     LIST_FOR_EACH_ENTRY(filter, &This->filters, struct filter, entry)
@@ -4704,7 +4704,7 @@ static HRESULT WINAPI VideoWindow_NotifyOwnerMessage(IVideoWindow *iface, OAHWND
     IVideoWindow *pVideoWindow;
     HRESULT hr;
 
-    TRACE("(%p/%p)->(%08lx, %d, %08lx, %08lx)\n", This, iface, hwnd, uMsg, wParam, lParam);
+    TRACE("(%p/%p)->(%08lx, %d, %08lx, %08lx)\n", This, iface, (long)hwnd, uMsg, (long)wParam, (long)lParam);
 
     EnterCriticalSection(&This->cs);
 
@@ -5082,7 +5082,7 @@ static HRESULT WINAPI MediaEvent_FreeEventParams(IMediaEventEx *iface, LONG lEvC
 {
     IFilterGraphImpl *This = impl_from_IMediaEventEx(iface);
 
-    TRACE("(%p/%p)->(%d, %08lx, %08lx): stub !!!\n", This, iface, lEvCode, lParam1, lParam2);
+    TRACE("(%p/%p)->(%d, %08lx, %08lx): stub !!!\n", This, iface, lEvCode, (long)lParam1, (long)lParam2);
 
     return S_OK;
 }
@@ -5093,7 +5093,7 @@ static HRESULT WINAPI MediaEvent_SetNotifyWindow(IMediaEventEx *iface, OAHWND hw
 {
     IFilterGraphImpl *This = impl_from_IMediaEventEx(iface);
 
-    TRACE("(%p/%p)->(%08lx, %d, %08lx)\n", This, iface, hwnd, lMsg, lInstanceData);
+    TRACE("(%p/%p)->(%08lx, %d, %08lx)\n", This, iface, (long)hwnd, lMsg, (long)lInstanceData);
 
     This->notif.hWnd = (HWND)hwnd;
     This->notif.msg = lMsg;
@@ -5418,7 +5418,7 @@ static HRESULT WINAPI MediaEventSink_Notify(IMediaEventSink *iface, LONG EventCo
     IFilterGraphImpl *This = impl_from_IMediaEventSink(iface);
     Event evt;
 
-    TRACE("(%p/%p)->(%d, %ld, %ld)\n", This, iface, EventCode, EventParam1, EventParam2);
+    TRACE("(%p/%p)->(%d, %ld, %ld)\n", This, iface, EventCode, (long)EventParam1, (long)EventParam2);
 
     /* We need thread safety here, let's use the events queue's one */
     EnterCriticalSection(&This->evqueue.msg_crst);

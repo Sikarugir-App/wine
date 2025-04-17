@@ -154,7 +154,7 @@ static int xrandr10_get_current_mode(void)
     return res;
 }
 
-static LONG xrandr10_set_current_mode( int mode )
+static LONG xrandr10_set_current_mode( int mode, struct x11drv_mode_info *mode_info )
 {
     SizeID size;
     Rotation rot;
@@ -343,12 +343,15 @@ static void get_screen_size( XRRScreenResources *resources, unsigned int *width,
     }
 }
 
-static LONG xrandr12_set_current_mode( int mode )
+static LONG xrandr12_set_current_mode( int mode, struct x11drv_mode_info *mode_info )
 {
     unsigned int screen_width, screen_height;
     Status status = RRSetConfigFailed;
+    Screen *screen;
+    XWindowAttributes attr;
     XRRScreenResources *resources;
     XRRCrtcInfo *crtc_info;
+    unsigned int max_width, max_height;
 
     mode = mode % xrandr_mode_count;
 
@@ -409,7 +412,7 @@ static LONG xrandr12_set_current_mode( int mode )
 
     if (status != RRSetConfigSuccess)
     {
-        ERR("Resolution change not successful -- perhaps display has changed?\n");
+        ERR("Resolution change not successful (%u) -- perhaps display has changed?\n", status);
         return DISP_CHANGE_FAILED;
     }
 

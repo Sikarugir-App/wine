@@ -1199,6 +1199,7 @@
 @ stdcall ReadFileEx(long ptr long ptr ptr)
 @ stdcall ReadFileScatter(long ptr long ptr ptr)
 @ stdcall ReadProcessMemory(long ptr ptr long ptr)
+@ stdcall -arch=x86_32on64 wine_ReadProcessMemory_HOSTPTR(long int64 ptr long ptr)
 # @ stub ReadThreadProfilingData
 @ stdcall -private RegCloseKey(long) advapi32.RegCloseKey
 @ stdcall -private RegCreateKeyExA(long str long ptr long long ptr ptr ptr) advapi32.RegCreateKeyExA
@@ -1684,3 +1685,8 @@
 
 # Init code
 @ cdecl __wine_kernel_init()
+
+@ stdcall -arch=x86_32on64 wine_MultiByteToWideChar_HOSTPTR(long long int64 long int64 long)
+@ stdcall -arch=x86_32on64 wine_WideCharToMultiByte_HOSTPTR(long long int64 long int64 long int64 int64)
+@ stdcall -arch=x86_32on64 wine_IsBadStringPtrA_HOSTPTR(int64 int64)
+@ stdcall -arch=x86_32on64 wine_IsBadStringPtrW_HOSTPTR(int64 int64)

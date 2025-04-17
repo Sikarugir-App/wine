@@ -34,10 +34,14 @@
 # include <machine/cpu.h>
 #endif
 #ifdef HAVE_MACH_MACHINE_H
+# define cpu_type_t mach_cpu_type_t
 # include <mach/machine.h>
+# undef cpu_type_t
 #endif
 #ifdef HAVE_IOKIT_IOKITLIB_H
+# define cpu_type_t mach_cpu_type_t
 # include <IOKit/IOKitLib.h>
+# undef cpu_type_t
 #endif
 
 #include <ctype.h>
@@ -299,6 +303,18 @@ NTSTATUS WINAPI NtAdjustPrivilegesToken(
     return ret;
 }
 
+
+/* Crossover hack tracked by bug 9315 */
+static BOOLEAN is_msmapi32_present(void)
+{
+    HMODULE dummy;
+    static const WCHAR wszMsmapi32[] = {'m','s','m','a','p','i','3','2','.','d','l','l',0};
+    UNICODE_STRING string;
+    RtlInitUnicodeString(&string, wszMsmapi32);
+    return (STATUS_SUCCESS ==
+        LdrGetDllHandle(0, 0, &string, &dummy));
+}
+
 /******************************************************************************
 *  NtQueryInformationToken		[NTDLL.@]
 *  ZwQueryInformationToken		[NTDLL.@]
@@ -421,21 +437,51 @@ NTSTATUS WINAPI NtQueryInformationToken(
                 struct token_groups *tg = buffer;
                 unsigned int *attr = (unsigned int *)(tg + 1);
                 ULONG i;
-                const int non_sid_portion = (sizeof(struct token_groups) + tg->count * sizeof(unsigned int));
-                SID *sids = (SID *)((char *)tokeninfo + FIELD_OFFSET( TOKEN_GROUPS, Groups[tg->count] ));
+                int non_sid_portion;
+                SID *sids;
+                ULONG needed_bytes;
+                static const SID service_sid = { SID_REVISION, 1, { SECURITY_NT_AUTHORITY }, { SECURITY_SERVICE_RID } };
+                BOOLEAN is_msmapi32 = is_msmapi32_present();
 
-                if (retlen) *retlen = reply->user_len;
-
-                groups->GroupCount = tg->count;
-                memcpy( sids, (char *)buffer + non_sid_portion,
-                        reply->user_len - FIELD_OFFSET( TOKEN_GROUPS, Groups[tg->count] ));
-
-                for (i = 0; i < tg->count; i++)
+                /* Crossover hack tracked by bug 9315 */
+                if (is_msmapi32)
                 {
-                    groups->Groups[i].Attributes = attr[i];
-                    groups->Groups[i].Sid = sids;
-                    sids = (SID *)((char *)sids + RtlLengthSid(sids));
+                    non_sid_portion = (sizeof(struct token_groups) + (tg->count + 1) * sizeof(unsigned int));
+                    sids = (SID *)((char *)tokeninfo + FIELD_OFFSET( TOKEN_GROUPS, Groups[tg->count + 1] ));
+                    needed_bytes = reply->user_len +
+                        FIELD_OFFSET( TOKEN_GROUPS, Groups[tg->count + 1] ) - FIELD_OFFSET( TOKEN_GROUPS, Groups[tg->count] ) +
+                        sizeof(service_sid);
                 }
+                else
+                {
+                    non_sid_portion = (sizeof(struct token_groups) + tg->count * sizeof(unsigned int));
+                    sids = (SID *)((char *)tokeninfo + FIELD_OFFSET( TOKEN_GROUPS, Groups[tg->count] ));
+                    needed_bytes = reply->user_len;
+                }
+
+                if (retlen) *retlen = needed_bytes;
+
+                if (needed_bytes <= tokeninfolength)
+                {
+                    groups->GroupCount = tg->count;
+                    memcpy( sids, (char *)buffer + non_sid_portion,
+                            reply->user_len - FIELD_OFFSET( TOKEN_GROUPS, Groups[tg->count] ));
+
+                    for (i = 0; i < tg->count; i++)
+                    {
+                        groups->Groups[i].Attributes = attr[i];
+                        groups->Groups[i].Sid = sids;
+                        sids = (SID *)((char *)sids + RtlLengthSid(sids));
+                    }
+                    if (is_msmapi32)
+                    {
+                        groups->Groups[i].Attributes = 0;
+                        groups->Groups[i].Sid = sids;
+                        groups->GroupCount++;
+                        memcpy(sids, &service_sid, sizeof(service_sid));
+                    }
+                }
+                else status = STATUS_BUFFER_TOO_SMALL;
              }
              else if (retlen) *retlen = 0;
         }
@@ -936,7 +982,7 @@ SYSTEM_CPU_INFORMATION cpu_info = { 0 };
  * This a set of mutually exclusive #if define()s each providing its own get_cpuinfo() to be called
  * from fill_cpu_info();
  */
-#if defined(__i386__) || defined(__x86_64__)
+#if defined(__i386__) || defined(__x86_64__) || defined(__i386_on_x86_64__)
 
 #define AUTH	0x68747541	/* "Auth" */
 #define ENTI	0x69746e65	/* "enti" */
@@ -1043,7 +1089,7 @@ static inline void get_cpuinfo(SYSTEM_CPU_INFORMATION* info)
 {
     unsigned int regs[4], regs2[4];
 
-#if defined(__i386__)
+#if defined(__i386__) || defined(__i386_on_x86_64__)
     info->Architecture = PROCESSOR_ARCHITECTURE_INTEL;
 #elif defined(__x86_64__)
     info->Architecture = PROCESSOR_ARCHITECTURE_AMD64;
@@ -2353,6 +2399,33 @@ BOOLEAN WINAPI RtlIsProcessorFeaturePresent( UINT feature )
     return feature < PROCESSOR_FEATURE_MAX && user_shared_data->ProcessorFeatures[feature];
 }
 
+static void get_ntdll_system_module(SYSTEM_MODULE *sm)
+{
+    char *ptr;
+    ANSI_STRING str;
+    PLIST_ENTRY entry;
+    PLDR_MODULE mod;
+
+    /* The first entry must be ntdll. */
+    entry = NtCurrentTeb()->Peb->LdrData->InLoadOrderModuleList.Flink;
+    mod = CONTAINING_RECORD(entry, LDR_MODULE, InLoadOrderModuleList);
+
+    sm->Reserved1 = 0;
+    sm->Reserved2 = 0;
+    sm->ImageBaseAddress = mod->BaseAddress;
+    sm->ImageSize = mod->SizeOfImage;
+    sm->Flags = mod->Flags;
+    sm->Id = 0;
+    sm->Rank = 0;
+    sm->Unknown = 0;
+    str.Length = 0;
+    str.MaximumLength = MAXIMUM_FILENAME_LENGTH;
+    str.Buffer = (char*)sm->Name;
+    RtlUnicodeStringToAnsiString(&str, &mod->FullDllName, FALSE);
+    ptr = strrchr(str.Buffer, '\\');
+    sm->NameOffset = (ptr != NULL) ? (ptr - str.Buffer + 1) : 0;
+}
+
 /******************************************************************************
  * NtQuerySystemInformation [NTDLL.@]
  * ZwQuerySystemInformation [NTDLL.@]
@@ -2725,9 +2798,43 @@ NTSTATUS WINAPI NtQuerySystemInformation(
         }
         break;
     case SystemModuleInformation:
-        /* FIXME: should be system-wide */
-        if (!SystemInformation) ret = STATUS_ACCESS_VIOLATION;
-        else ret = LdrQueryProcessModuleInformation( SystemInformation, Length, &len );
+        if (!SystemInformation)
+            ret = STATUS_ACCESS_VIOLATION;
+        else if (Length < FIELD_OFFSET( SYSTEM_MODULE_INFORMATION, Modules[1] ))
+        {
+            len = FIELD_OFFSET( SYSTEM_MODULE_INFORMATION, Modules[1] );
+            ret = STATUS_INFO_LENGTH_MISMATCH;
+        }
+        else
+        {
+            SYSTEM_MODULE_INFORMATION *smi = SystemInformation;
+
+            FIXME("returning fake driver list\n");
+            smi->ModulesCount = 1;
+            get_ntdll_system_module(&smi->Modules[0]);
+            ret = STATUS_SUCCESS;
+        }
+        break;
+    case SystemModuleInformationEx:
+        if (!SystemInformation)
+            ret = STATUS_ACCESS_VIOLATION;
+        else if (Length < sizeof(SYSTEM_MODULE_INFORMATION_EX))
+        {
+            len = sizeof(SYSTEM_MODULE_INFORMATION_EX);
+            ret = STATUS_INFO_LENGTH_MISMATCH;
+        }
+        else
+        {
+            SYSTEM_MODULE_INFORMATION_EX *info = SystemInformation;
+
+            FIXME("info_class SystemModuleInformationEx stub!\n");
+            get_ntdll_system_module(&info->BaseInfo);
+            info->NextOffset = 0;
+            info->ImageCheckSum = 0;
+            info->TimeDateStamp = 0;
+            info->DefaultBase = info->BaseInfo.ImageBaseAddress;
+            ret = STATUS_SUCCESS;
+        }
         break;
     case SystemHandleInformation:
         {

@@ -28,6 +28,9 @@
 #include "ws2tcpip.h"
 
 #include <stdarg.h>
+#ifndef _VA_LIST_T /* Clang's stdarg.h guards with _VA_LIST, while Xcode's uses _VA_LIST_T */
+#define _VA_LIST_T
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -2331,9 +2334,9 @@ static DWORD urlcache_rate_entry(entry_url *url_entry, FILETIME *cur_time)
     return rating;
 }
 
-static int dword_cmp(const void *p1, const void *p2)
+static int dword_cmp(const void * HOSTPTR p1, const void * HOSTPTR p2)
 {
-    return *(const DWORD*)p1 - *(const DWORD*)p2;
+    return *(const DWORD* HOSTPTR)p1 - *(const DWORD* HOSTPTR)p2;
 }
 
 /***********************************************************************
@@ -3133,7 +3136,7 @@ BOOL WINAPI ReadUrlCacheEntryStream(
         return FALSE;
     }
 
-    if (IsBadReadPtr(pStream, sizeof(*pStream)) || IsBadStringPtrA(pStream->url, INTERNET_MAX_URL_LENGTH))
+    if (IsBadReadPtr(pStream, sizeof(*pStream)) || IsBadStringPtrA(pStream->url, (UINT_PTR)INTERNET_MAX_URL_LENGTH))
     {
         SetLastError(ERROR_INVALID_HANDLE);
         return FALSE;
@@ -3261,7 +3264,7 @@ BOOL WINAPI UnlockUrlCacheEntryStream(
         return FALSE;
     }
 
-    if (IsBadReadPtr(pStream, sizeof(*pStream)) || IsBadStringPtrA(pStream->url, INTERNET_MAX_URL_LENGTH))
+    if (IsBadReadPtr(pStream, sizeof(*pStream)) || IsBadStringPtrA(pStream->url, (UINT_PTR)INTERNET_MAX_URL_LENGTH))
     {
         SetLastError(ERROR_INVALID_HANDLE);
         return FALSE;

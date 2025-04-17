@@ -23,6 +23,8 @@
 #include <dxdiag.h>
 
 #include "wine/debug.h"
+#include "wine/unicode.h"
+
 #include "dxdiag_private.h"
 
 WINE_DEFAULT_DEBUG_CHANNEL(dxdiag);
@@ -59,7 +61,7 @@ static BOOL process_file_name(const WCHAR *cmdline, enum output_type output_type
         cmdline++;
 
     /* Ignore filename quoting, if any. */
-    if (*cmdline == '"' && (endptr = wcsrchr(cmdline, '"')))
+    if (*cmdline == '"' && (endptr = strrchrW(cmdline, '"')))
     {
         /* Reject a string with only one quote. */
         if (cmdline == endptr)
@@ -68,7 +70,7 @@ static BOOL process_file_name(const WCHAR *cmdline, enum output_type output_type
         cmdline++;
     }
     else
-        endptr = cmdline + lstrlenW(cmdline);
+        endptr = cmdline + strlenW(cmdline);
 
     len = endptr - cmdline;
     if (len == 0 || len >= filename_len)
@@ -78,14 +80,14 @@ static BOOL process_file_name(const WCHAR *cmdline, enum output_type output_type
     filename[len] = '\0';
 
     /* Append an extension appropriate for the output type if the filename does not have one. */
-    if (!wcsrchr(filename, '.'))
+    if (!strrchrW(filename, '.'))
     {
         const WCHAR *filename_ext = get_output_extension(output_type);
 
-        if (len + lstrlenW(filename_ext) >= filename_len)
+        if (len + strlenW(filename_ext) >= filename_len)
             return FALSE;
 
-        lstrcatW(filename, filename_ext);
+        strcatW(filename, filename_ext);
     }
 
     return TRUE;
@@ -143,17 +145,17 @@ static BOOL process_command_line(const WCHAR *cmdline, struct command_line_info 
                                      ARRAY_SIZE(info->outfile));
         case 'W':
         case 'w':
-            if (wcsnicmp(cmdline, whql_colonW, 5))
+            if (strncmpiW(cmdline, whql_colonW, 5))
                 return FALSE;
 
             cmdline += 5;
 
-            if (!wcsnicmp(cmdline, offW, 3))
+            if (!strncmpiW(cmdline, offW, 3))
             {
                 info->whql_check = FALSE;
                 cmdline += 2;
             }
-            else if (!wcsnicmp(cmdline, onW, 2))
+            else if (!strncmpiW(cmdline, onW, 2))
             {
                 info->whql_check = TRUE;
                 cmdline++;
@@ -165,7 +167,7 @@ static BOOL process_command_line(const WCHAR *cmdline, struct command_line_info 
 
         case 'd':
         case 'D':
-            if (wcsnicmp(cmdline, dontskipW, 8))
+            if (strncmpiW(cmdline, dontskipW, 8))
                 return FALSE;
             cmdline += 8;
             break;

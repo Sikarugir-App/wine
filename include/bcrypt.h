@@ -19,6 +19,8 @@
 #ifndef __WINE_BCRYPT_H
 #define __WINE_BCRYPT_H
 
+#include "wine/winheader_enter.h"
+
 #ifndef WINAPI
 #define WINAPI __stdcall
 #endif
@@ -331,5 +333,7 @@ NTSTATUS WINAPI BCryptOpenAlgorithmProvider(BCRYPT_ALG_HANDLE *, LPCWSTR, LPCWST
 NTSTATUS WINAPI BCryptSecretAgreement(BCRYPT_KEY_HANDLE, BCRYPT_KEY_HANDLE, BCRYPT_SECRET_HANDLE *, ULONG);
 NTSTATUS WINAPI BCryptSetProperty(BCRYPT_HANDLE, LPCWSTR, PUCHAR, ULONG, ULONG);
 NTSTATUS WINAPI BCryptVerifySignature(BCRYPT_KEY_HANDLE, void *, UCHAR *, ULONG, UCHAR *, ULONG, ULONG);
+
+#include "wine/winheader_exit.h"
 
 #endif  /* __WINE_BCRYPT_H */

@@ -287,6 +287,9 @@
 /* Define to 1 if you have the `if_nameindex' function. */
 #undef HAVE_IF_NAMEINDEX
 
+/* Define to 1 if your compiler supports the -ilocal option. */
+#undef HAVE_ILOCAL
+
 /* Define to 1 if you have the `ilogb' function. */
 #undef HAVE_ILOGB
 
@@ -319,6 +322,12 @@
 
 /* Define to 1 if you have the <IOKit/IOKitLib.h> header file. */
 #undef HAVE_IOKIT_IOKITLIB_H
+
+/* Define to 1 if you have the <IOKit/usb/IOUSBLib.h> header file. */
+#undef HAVE_IOKIT_USB_IOUSBLIB_H
+
+/* Define to 1 if you have the `IOServiceMatching' function. */
+#undef HAVE_IOSERVICEMATCHING
 
 /* Define to 1 if you have the `isfinite' function. */
 #undef HAVE_ISFINITE
@@ -820,6 +829,9 @@
 
 /* Define to 1 if you have the `settimeofday' function. */
 #undef HAVE_SETTIMEOFDAY
+
+/* Define to 1 if you have the `shm_open' function. */
+#undef HAVE_SHM_OPEN
 
 /* Define to 1 if `interface_id' is a member of `sg_io_hdr_t'. */
 #undef HAVE_SG_IO_HDR_T_INTERFACE_ID

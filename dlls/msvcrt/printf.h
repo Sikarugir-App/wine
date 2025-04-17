@@ -579,7 +579,7 @@ int FUNC_NAME(pf_printf)(FUNC_NAME(puts_clbk) pf_puts, void *puts_ctx, const API
             if(!tmp)
                 return -1;
 
-            if(flags.IntegerDouble || (flags.IntegerNative && sizeof(void*) == 8))
+            if(flags.IntegerDouble || (flags.IntegerNative && wine_is_64bit()))
                 FUNC_NAME(pf_integer_conv)(tmp, max_len, &flags, pf_args(args_ctx, pos,
                             VT_I8, valist).get_longlong);
             else if(flags.Format=='d' || flags.Format=='i')

@@ -192,7 +192,7 @@ static HRESULT WINAPI SystemClockImpl_AdviseTime(IReferenceClock *iface,
     struct advise_sink *sink;
 
     TRACE("clock %p, base %s, offset %s, event %#lx, cookie %p.\n",
-            clock, wine_dbgstr_longlong(base), wine_dbgstr_longlong(offset), event, cookie);
+            clock, wine_dbgstr_longlong(base), wine_dbgstr_longlong(offset), (unsigned long)event, cookie);
 
     if (!event)
         return E_INVALIDARG;
@@ -228,7 +228,7 @@ static HRESULT WINAPI SystemClockImpl_AdvisePeriodic(IReferenceClock* iface,
     struct advise_sink *sink;
 
     TRACE("clock %p, start %s, period %s, semaphore %#lx, cookie %p.\n",
-            clock, wine_dbgstr_longlong(start), wine_dbgstr_longlong(period), semaphore, cookie);
+            clock, wine_dbgstr_longlong(start), wine_dbgstr_longlong(period), (unsigned long)semaphore, cookie);
 
     if (!semaphore)
         return E_INVALIDARG;
@@ -262,7 +262,7 @@ static HRESULT WINAPI SystemClockImpl_Unadvise(IReferenceClock *iface, DWORD_PTR
     struct system_clock *clock = impl_from_IReferenceClock(iface);
     struct advise_sink *sink;
 
-    TRACE("clock %p, cookie %#lx.\n", clock, cookie);
+    TRACE("clock %p, cookie %#lx.\n", clock, (unsigned long)cookie);
 
     EnterCriticalSection(&clock->cs);
 

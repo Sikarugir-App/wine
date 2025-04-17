@@ -35,7 +35,7 @@ MSVCRT_FILE * CDECL __acrt_iob_func(unsigned idx)
     return __p__iob() + idx;
 }
 
-#ifdef __i386__
+#if defined(__i386__) || defined(__i386_on_x86_64__)
 void *_imp____acrt_iob_func = __acrt_iob_func;
 #else
 void *__imp___acrt_iob_func = __acrt_iob_func;

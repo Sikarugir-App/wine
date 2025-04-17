@@ -494,6 +494,8 @@ enum x11drv_atoms
     XATOM_text_rtf,
     XATOM_text_richtext,
     XATOM_text_uri_list,
+    XATOM__CX_WORKAREA, /* CodeWeavers Hack bug 5752 */
+    XATOM__CX_APPLEWM_TAG, /* CodeWeavers Hack bug 9517 */
     NB_XATOMS
 };
 
@@ -658,7 +660,7 @@ unsigned int X11DRV_Settings_GetModeCount(void) DECLSPEC_HIDDEN;
 void X11DRV_Settings_Init(void) DECLSPEC_HIDDEN;
 struct x11drv_mode_info *X11DRV_Settings_SetHandlers(const char *name,
                                                      int (*pNewGCM)(void),
-                                                     LONG (*pNewSCM)(int),
+                                                     LONG (*pNewSCM)(int, struct x11drv_mode_info *),
                                                      unsigned int nmodes,
                                                      int reserve_depths) DECLSPEC_HIDDEN;
 

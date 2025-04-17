@@ -138,6 +138,26 @@ static void texture2d_depth_blt_fbo(const struct wined3d_device *device, struct 
     checkGLcall("glBlitFramebuffer()");
 }
 
+static void prepare_blit_quirks(const struct wined3d_device *device, const struct wined3d_gl_info *gl_info)
+{
+    /* ATI Macs blend blits even though GL_EXT_framebuffer_blit says that this
+     * operation does not blend. This sometimes even happens if GL_BLEND is
+     * disabled, although in my glut test case blending has to be enabled for
+     * the bug to occur. While we're at it, disable blending.
+     *
+     * Tracked by crossover hacks bug 5391. */
+    gl_info->gl_ops.gl.p_glDisable(GL_BLEND);
+    gl_info->gl_ops.gl.p_glBlendFunc(GL_ONE, GL_ZERO);
+    device_invalidate_state(device, STATE_RENDER(WINED3D_RS_ALPHABLENDENABLE));
+
+    gl_info->gl_ops.gl.p_glDisable(GL_ALPHA_TEST);
+    gl_info->gl_ops.gl.p_glAlphaFunc(GL_ALWAYS, 0.0);
+    device_invalidate_state(device, STATE_RENDER(WINED3D_RS_ALPHATESTENABLE));
+    gl_info->gl_ops.gl.p_glDisable(GL_STENCIL_TEST);
+    gl_info->gl_ops.gl.p_glStencilFunc(GL_ALWAYS, 0, 0);
+    device_invalidate_state(device, STATE_RENDER(WINED3D_RS_STENCILENABLE));
+}
+
 /* Blit between surface locations. Onscreen on different swapchains is not supported.
  * Depth / stencil is not supported. Context activation is done by the caller. */
 void texture2d_blt_fbo(struct wined3d_device *device, struct wined3d_context *context,
@@ -147,9 +167,9 @@ void texture2d_blt_fbo(struct wined3d_device *device, struct wined3d_context *co
         const RECT *dst_rect)
 {
     struct wined3d_texture *required_texture, *restore_texture;
-    unsigned int required_idx, restore_idx;
     const struct wined3d_gl_info *gl_info;
     struct wined3d_context_gl *context_gl;
+    unsigned int restore_idx;
     GLenum gl_filter;
     GLenum buffer;
     RECT s, d;
@@ -192,26 +212,21 @@ void texture2d_blt_fbo(struct wined3d_device *device, struct wined3d_context *co
     else
         wined3d_texture_prepare_location(dst_texture, dst_sub_resource_idx, context, dst_location);
 
+    /* Acquire a context for the front-buffer, even though we may be blitting
+     * to/from a back-buffer. Since context_acquire() doesn't take the
+     * resource location into account, it may consider the back-buffer to be
+     * offscreen. */
     if (src_location == WINED3D_LOCATION_DRAWABLE)
-    {
-        required_texture = src_texture;
-        required_idx = src_sub_resource_idx;
-    }
+        required_texture = src_texture->swapchain->front_buffer;
     else if (dst_location == WINED3D_LOCATION_DRAWABLE)
-    {
-        required_texture = dst_texture;
-        required_idx = dst_sub_resource_idx;
-    }
+        required_texture = dst_texture->swapchain->front_buffer;
     else
-    {
         required_texture = NULL;
-        required_idx = 0;
-    }
 
     restore_texture = context->current_rt.texture;
     restore_idx = context->current_rt.sub_resource_idx;
-    if (restore_texture != required_texture || restore_idx != required_idx)
-        context = context_acquire(device, required_texture, required_idx);
+    if (restore_texture != required_texture)
+        context = context_acquire(device, required_texture, 0);
     else
         restore_texture = NULL;
 
@@ -273,6 +288,9 @@ void texture2d_blt_fbo(struct wined3d_device *device, struct wined3d_context *co
 
     gl_info->gl_ops.gl.p_glDisable(GL_SCISSOR_TEST);
     context_invalidate_state(context, STATE_RENDER(WINED3D_RS_SCISSORTESTENABLE));
+
+    if (gl_info->quirks & WINED3D_CX_QUIRK_BLIT)
+        prepare_blit_quirks(device, gl_info);
 
     gl_info->fbo_ops.glBlitFramebuffer(src_rect->left, src_rect->top, src_rect->right, src_rect->bottom,
             dst_rect->left, dst_rect->top, dst_rect->right, dst_rect->bottom, GL_COLOR_BUFFER_BIT, gl_filter);
@@ -796,7 +814,7 @@ void texture2d_read_from_framebuffer(struct wined3d_texture *texture, unsigned i
 
         if (data.buffer_object)
         {
-            mem = GL_EXTCALL(glMapBuffer(GL_PIXEL_PACK_BUFFER, GL_READ_WRITE));
+            mem = ADDRSPACECAST(void*, GL_EXTCALL(glMapBuffer(GL_PIXEL_PACK_BUFFER, GL_READ_WRITE)));
             checkGLcall("glMapBuffer");
         }
         else

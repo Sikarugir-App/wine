@@ -163,7 +163,7 @@ struct ACImpl {
     UINT32 cap_bufsize_frames, cap_offs_frames, cap_held_frames, wrap_bufsize_frames, resamp_bufsize_frames;
     INT32 getbuf_last;
     BOOL playing;
-    BYTE *cap_buffer, *wrap_buffer, *resamp_buffer, *local_buffer, *tmp_buffer;
+    BYTE *cap_buffer, * HOSTPTR wrap_buffer, *resamp_buffer, *local_buffer, *tmp_buffer;
 
     AudioSession *session;
     AudioSessionWrapper *session_wrapper;
@@ -385,7 +385,7 @@ HRESULT WINAPI AUDDRV_GetEndpointIDs(EDataFlow flow, WCHAR ***ids,
         GUID **guids, UINT *num, UINT *def_index)
 {
     UInt32 devsize, size;
-    AudioDeviceID *devices;
+    AudioDeviceID * WIN32PTR devices;
     AudioDeviceID default_id;
     AudioObjectPropertyAddress addr;
     OSStatus sc;
@@ -448,7 +448,7 @@ HRESULT WINAPI AUDDRV_GetEndpointIDs(EDataFlow flow, WCHAR ***ids,
     *num = 0;
     *def_index = (UINT)-1;
     for(i = 0; i < ndevices; ++i){
-        AudioBufferList *buffers;
+        AudioBufferList * WIN32PTR buffers;
         CFStringRef name;
         SIZE_T len;
         int j;
@@ -991,7 +991,7 @@ static HRESULT get_audio_session(const GUID *sessionguid,
 }
 
 static void ca_wrap_buffer(BYTE *dst, UINT32 dst_offs, UINT32 dst_bytes,
-        BYTE *src, UINT32 src_bytes)
+        BYTE * HOSTPTR src, UINT32 src_bytes)
 {
     UINT32 chunk_bytes = dst_bytes - dst_offs;
 
@@ -1002,7 +1002,7 @@ static void ca_wrap_buffer(BYTE *dst, UINT32 dst_offs, UINT32 dst_bytes,
         memcpy(dst + dst_offs, src, src_bytes);
 }
 
-static void silence_buffer(ACImpl *This, BYTE *buffer, UINT32 frames)
+static void silence_buffer(ACImpl *This, BYTE * HOSTPTR buffer, UINT32 frames)
 {
     WAVEFORMATEXTENSIBLE *fmtex = (WAVEFORMATEXTENSIBLE*)This->fmt;
     if((This->fmt->wFormatTag == WAVE_FORMAT_PCM ||
@@ -1015,11 +1015,11 @@ static void silence_buffer(ACImpl *This, BYTE *buffer, UINT32 frames)
 }
 
 /* CA is pulling data from us */
-static OSStatus ca_render_cb(void *user, AudioUnitRenderActionFlags *flags,
+static OSStatus ca_render_cb(void * HOSTPTR user, AudioUnitRenderActionFlags *flags,
         const AudioTimeStamp *ts, UInt32 bus, UInt32 nframes,
         AudioBufferList *data)
 {
-    ACImpl *This = user;
+    ACImpl *This = ADDRSPACECAST(ACImpl*,user);
     UINT32 to_copy_bytes, to_copy_frames, chunk_bytes, lcl_offs_bytes;
 
     OSSpinLockLock(&This->lock);
@@ -1033,7 +1033,7 @@ static OSStatus ca_render_cb(void *user, AudioUnitRenderActionFlags *flags,
 
         if(to_copy_bytes > chunk_bytes){
             memcpy(data->mBuffers[0].mData, This->local_buffer + lcl_offs_bytes, chunk_bytes);
-            memcpy(((BYTE *)data->mBuffers[0].mData) + chunk_bytes, This->local_buffer, to_copy_bytes - chunk_bytes);
+            memcpy(((BYTE * HOSTPTR)data->mBuffers[0].mData) + chunk_bytes, This->local_buffer, to_copy_bytes - chunk_bytes);
         }else
             memcpy(data->mBuffers[0].mData, This->local_buffer + lcl_offs_bytes, to_copy_bytes);
 
@@ -1044,7 +1044,7 @@ static OSStatus ca_render_cb(void *user, AudioUnitRenderActionFlags *flags,
         to_copy_bytes = to_copy_frames = 0;
 
     if(nframes > to_copy_frames)
-        silence_buffer(This, ((BYTE *)data->mBuffers[0].mData) + to_copy_bytes, nframes - to_copy_frames);
+        silence_buffer(This, ((BYTE * HOSTPTR)data->mBuffers[0].mData) + to_copy_bytes, nframes - to_copy_frames);
 
     OSSpinLockUnlock(&This->lock);
 
@@ -1060,9 +1060,9 @@ static UINT buf_ptr_diff(UINT left, UINT right, UINT bufsize)
 
 /* place data from cap_buffer into provided AudioBufferList */
 static OSStatus feed_cb(AudioConverterRef converter, UInt32 *nframes, AudioBufferList *data,
-        AudioStreamPacketDescription **packets, void *user)
+        AudioStreamPacketDescription ** HOSTPTR packets, void * HOSTPTR user)
 {
-    ACImpl *This = user;
+    ACImpl *This = ADDRSPACECAST(ACImpl*,user);
 
     *nframes = min(*nframes, This->cap_held_frames);
     if(!*nframes){
@@ -1157,11 +1157,11 @@ static void capture_resample(ACImpl *This)
  * raw data is resampled from cap_buffer into resamp_buffer in period-size
  * chunks and copied to local_buffer
  */
-static OSStatus ca_capture_cb(void *user, AudioUnitRenderActionFlags *flags,
+static OSStatus ca_capture_cb(void * HOSTPTR user, AudioUnitRenderActionFlags *flags,
         const AudioTimeStamp *ts, UInt32 bus, UInt32 nframes,
         AudioBufferList *data)
 {
-    ACImpl *This = user;
+    ACImpl *This = ADDRSPACECAST(ACImpl*,user);
     AudioBufferList list;
     OSStatus sc;
     UINT32 cap_wri_offs_frames;
@@ -1524,7 +1524,7 @@ static HRESULT WINAPI AudioClient_GetBufferSize(IAudioClient *iface,
 static HRESULT ca_get_max_stream_latency(ACImpl *This, UInt32 *max)
 {
     AudioObjectPropertyAddress addr;
-    AudioStreamID *ids;
+    AudioStreamID * WIN32PTR ids;
     UInt32 size;
     OSStatus sc;
     int nstreams, i;
@@ -1744,7 +1744,7 @@ static HRESULT WINAPI AudioClient_GetMixFormat(IAudioClient *iface,
     OSStatus sc;
     UInt32 size;
     Float64 rate;
-    AudioBufferList *buffers;
+    AudioBufferList * WIN32PTR buffers;
     AudioObjectPropertyAddress addr;
     int i;
 

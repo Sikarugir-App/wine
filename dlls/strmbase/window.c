@@ -694,7 +694,7 @@ HRESULT WINAPI BaseControlWindowImpl_NotifyOwnerMessage(IVideoWindow *iface, OAH
 {
     BaseControlWindow*  This = impl_from_IVideoWindow(iface);
 
-    TRACE("(%p/%p)->(%08lx, %d, %08lx, %08lx)\n", This, iface, hwnd, uMsg, wParam, lParam);
+    TRACE("(%p/%p)->(%08lx, %d, %08lx, %08lx)\n", This, iface, (long)hwnd, uMsg, (long)wParam, (long)lParam);
 
     if (!PostMessageW(This->baseWindow.hWnd, uMsg, wParam, lParam))
         return E_FAIL;

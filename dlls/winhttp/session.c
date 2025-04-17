@@ -1366,7 +1366,7 @@ static BOOL get_system_proxy_autoconfig_url( char *buf, DWORD buflen )
 {
 #if defined(MAC_OS_X_VERSION_10_6) && MAC_OS_X_VERSION_MAX_ALLOWED >= MAC_OS_X_VERSION_10_6
     CFDictionaryRef settings = CFNetworkCopySystemProxySettings();
-    const void *ref;
+    CFStringRef ref;
     BOOL ret = FALSE;
 
     if (!settings) return FALSE;
@@ -1520,7 +1520,7 @@ BOOL WINAPI WinHttpGetDefaultProxyConfiguration( WINHTTP_PROXY_INFO *info )
     LONG l;
     HKEY key;
     BOOL got_from_reg = FALSE, direct = TRUE;
-    char *envproxy;
+    char * HOSTPTR envproxy;
 
     TRACE("%p\n", info);
 
@@ -1598,7 +1598,7 @@ BOOL WINAPI WinHttpGetDefaultProxyConfiguration( WINHTTP_PROXY_INFO *info )
     }
     if (!got_from_reg && (envproxy = getenv( "http_proxy" )))
     {
-        char *colon, *http_proxy = NULL;
+        char * HOSTPTR colon, * HOSTPTR http_proxy = NULL;
 
         if (!(colon = strchr( envproxy, ':' ))) http_proxy = envproxy;
         else

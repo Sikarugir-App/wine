@@ -98,6 +98,8 @@ static const WCHAR class_process_getowner_outW[] =
      'N','E','R','_','O','U','T',0};
 static const WCHAR class_processorW[] =
     {'W','i','n','3','2','_','P','r','o','c','e','s','s','o','r',0};
+static const WCHAR class_serverfeatureW[] =
+    {'W','i','n','3','2','_','S','e','r','v','e','r','F','e','a','t','u','r','e',0};
 static const WCHAR class_processor2W[] =
     {'C','I','M','_','P','r','o','c','e','s','s','o','r',0};
 static const WCHAR class_qualifiersW[] =
@@ -309,6 +311,8 @@ static const WCHAR prop_ostypeW[] =
     {'O','S','T','y','p','e',0};
 static const WCHAR prop_parameterW[] =
     {'P','a','r','a','m','e','t','e','r',0};
+static const WCHAR prop_parentidW[] =
+    {'P','a','r','e','n','t','I','D',0};
 static const WCHAR prop_physicaladapterW[] =
     {'P','h','y','s','i','c','a','l','A','d','a','p','t','e','r',0};
 static const WCHAR prop_pixelsperxlogicalinchW[] =
@@ -753,6 +757,12 @@ static const struct column col_videocontroller[] =
     { prop_videomodedescriptionW,   CIM_STRING|COL_FLAG_DYNAMIC },
     { prop_videoprocessorW,         CIM_STRING|COL_FLAG_DYNAMIC },
 };
+static const struct column col_serverfeature[] =
+{
+    { prop_idW,       CIM_UINT32|COL_FLAG_KEY },
+    { prop_parentidW, CIM_UINT32 },
+    { prop_nameW,     CIM_STRING },
+};
 
 static const WCHAR baseboard_manufacturerW[] =
     {'I','n','t','e','l',' ','C','o','r','p','o','r','a','t','i','o','n',0};
@@ -850,6 +860,8 @@ static const WCHAR videocontroller_driverversionW[] =
     {'1','.','0',0};
 static const WCHAR videocontroller_statusW[] =
     {'O','K',0};
+static const WCHAR desktop_experienceW[] =
+    {'D','e','s','k','t','o','p',' ','E','x','p','e','r','i','e','n','c','e',0};
 
 #include "pshpack1.h"
 struct record_baseboard
@@ -1182,6 +1194,12 @@ struct record_videocontroller
     const WCHAR *videomodedescription;
     const WCHAR *videoprocessor;
 };
+struct record_serverfeature
+{
+    UINT32       id;
+    UINT32       parentid;
+    const WCHAR *name;
+};
 #include "poppack.h"
 
 static const struct record_baseboard data_baseboard[] =
@@ -1269,6 +1287,10 @@ static const struct record_systemenclosure data_systemenclosure[] =
 static const struct record_systemsecurity data_systemsecurity[] =
 {
     { security_get_sd, security_set_sd }
+};
+static const struct record_serverfeature data_serverfeatures[] =
+{
+    { 35, 0, desktop_experienceW },
 };
 
 /* check if row matches condition and update status */
@@ -3696,11 +3718,33 @@ static struct table builtin_classes[] =
     { class_videocontrollerW, ARRAY_SIZE(col_videocontroller), col_videocontroller, 0, 0, NULL, fill_videocontroller }
 };
 
+static struct table server_feature[] =
+{
+    { class_serverfeatureW, ARRAY_SIZE(col_serverfeature), col_serverfeature, ARRAY_SIZE(data_serverfeatures), 0, (BYTE *)data_serverfeatures },
+};
+
+static BOOL is_onenote(void)
+{
+    static const char *onenote = "ONENOTE.EXE";
+    char name[MAX_PATH], *ptr;
+
+    if (!GetModuleFileNameA(NULL, name, sizeof(name)))
+        return FALSE;
+
+    ptr = strstr(name, onenote);
+    return ptr && !ptr[strlen(onenote)];
+}
+
 void init_table_list( void )
 {
     static struct list tables = LIST_INIT( tables );
     UINT i;
 
     for (i = 0; i < ARRAY_SIZE(builtin_classes); i++) list_add_tail( &tables, &builtin_classes[i].entry );
+
+    /* CXHACK: 16057 - Client system do not support this class, for some reason OneNote asks for it anyway. */
+    if (is_onenote())
+        list_add_tail( &tables, &server_feature[0].entry );
+
     table_list = &tables;
 }

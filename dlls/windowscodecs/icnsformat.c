@@ -665,7 +665,7 @@ static HRESULT WINAPI IcnsEncoder_Commit(IWICBitmapEncoder *iface)
     }
 
     buffer_size = GetHandleSize((Handle)This->icns_family);
-    hr = IStream_Write(This->stream, *This->icns_family, buffer_size, &byteswritten);
+    hr = i_stream_write(This->stream, *This->icns_family, buffer_size, &byteswritten);
     if (FAILED(hr) || byteswritten != buffer_size)
     {
         WARN("writing file failed, hr = 0x%08X\n", hr);

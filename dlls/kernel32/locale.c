@@ -266,7 +266,7 @@ static CRITICAL_SECTION_DEBUG critsect_debug =
 static CRITICAL_SECTION cache_section = { &critsect_debug, -1, 0, 0, 0, 0 };
 
 /* Copy Ascii string to Unicode without using codepages */
-static inline void strcpynAtoW( WCHAR *dst, const char *src, size_t n )
+static inline void strcpynAtoW( WCHAR * HOSTPTR dst, const char * HOSTPTR src, size_t n )
 {
     while (n > 1 && *src)
     {
@@ -340,9 +340,9 @@ static const union cptable *get_codepage_table( unsigned int codepage )
 /***********************************************************************
  *              charset_cmp (internal)
  */
-static int charset_cmp( const void *name, const void *entry )
+static int charset_cmp( const void * HOSTPTR name, const void * HOSTPTR entry )
 {
-    const struct charset_entry *charset = entry;
+    const struct charset_entry * HOSTPTR charset = entry;
     return _strnicmp( name, charset->charset_name, -1 );
 }
 
@@ -351,7 +351,7 @@ static int charset_cmp( const void *name, const void *entry )
  */
 static UINT find_charset( const WCHAR *name )
 {
-    const struct charset_entry *entry;
+    const struct charset_entry * HOSTPTR entry;
     char charset_name[16];
     size_t i, j;
 
@@ -1001,7 +1001,7 @@ static const char* get_mac_locale(void)
  */
 static BOOL has_env(const char* name)
 {
-    const char* value = getenv( name );
+    const char* HOSTPTR value = getenv( name );
     return value && value[0];
 }
 #endif
@@ -1015,9 +1015,9 @@ static BOOL has_env(const char* name)
  * is common for the Mac locale settings to not be supported by the C
  * library.  So, we sometimes override the result with the Mac locale.
  */
-static const char* get_locale(int category, const char* category_name)
+static const char* HOSTPTR get_locale(int category, const char* category_name)
 {
-    const char* ret = setlocale(category, NULL);
+    const char* HOSTPTR ret = setlocale(category, NULL);
 
 #ifdef __ANDROID__
     if (!strcmp(ret, "C"))
@@ -1098,6 +1098,87 @@ static const char* get_locale(int category, const char* category_name)
     }
 #endif
 
+    {
+        /* CrossOver hack for bug 15091: locale overrides in the registry. */
+        HANDLE user_key, software_key, wine_key;
+        NTSTATUS stat;
+        OBJECT_ATTRIBUTES attr;
+        UNICODE_STRING nameW;
+
+        stat = RtlOpenCurrentUser( KEY_ALL_ACCESS, &user_key );
+
+        if (stat == STATUS_SUCCESS)
+        {
+            static const WCHAR softwareW[] = {'S','o','f','t','w','a','r','e',0};
+            attr.Length = sizeof(attr);
+            attr.RootDirectory = user_key;
+            RtlInitUnicodeString( &nameW, softwareW );
+            attr.ObjectName = &nameW;
+            attr.Attributes = 0;
+            attr.SecurityDescriptor = NULL;
+            attr.SecurityQualityOfService = NULL;
+
+            stat = NtCreateKey( &software_key, KEY_ALL_ACCESS, &attr, 0, NULL, 0, NULL );
+
+            NtClose( user_key );
+        }
+
+        if (stat == STATUS_SUCCESS)
+        {
+            static const WCHAR wineW[] = {'W','i','n','e',0};
+            attr.RootDirectory = software_key;
+            RtlInitUnicodeString( &nameW, wineW );
+
+            stat = NtCreateKey( &wine_key, KEY_ALL_ACCESS, &attr, 0, NULL, 0, NULL );
+
+            NtClose( software_key );
+        }
+
+        if (stat == STATUS_SUCCESS)
+        {
+            static const WCHAR lcallW[] = {'L','C','_','A','L','L',0};
+            static const WCHAR langW[] = {'L','A','N','G',0};
+            WCHAR categoryW[40];
+            UNICODE_STRING categorystr;
+            WCHAR bufferW[46];
+            static char result[40];
+            const KEY_VALUE_PARTIAL_INFORMATION *info = (KEY_VALUE_PARTIAL_INFORMATION*)bufferW;
+            DWORD count;
+
+            RtlInitUnicodeString( &categorystr, lcallW );
+
+            count = sizeof(bufferW);
+            stat = NtQueryValueKey( wine_key, &categorystr, KeyValuePartialInformation, bufferW, count, &count );
+
+            if (stat != STATUS_SUCCESS)
+            {
+                strcpynAtoW( categoryW, category_name, 40 );
+                RtlInitUnicodeString( &categorystr, categoryW );
+                count = sizeof(bufferW);
+                stat = NtQueryValueKey( wine_key, &categorystr, KeyValuePartialInformation, bufferW, count, &count );
+            }
+
+            if (stat != STATUS_SUCCESS)
+            {
+                RtlInitUnicodeString( &categorystr, langW );
+                count = sizeof(bufferW);
+                stat = NtQueryValueKey( wine_key, &categorystr, KeyValuePartialInformation, bufferW, count, &count );
+            }
+
+            if (stat == STATUS_SUCCESS && info->Type == REG_SZ)
+            {
+                int i;
+                for (i=0; i < min(39, info->DataLength / 2); i++)
+                    result[i] = ((LPCWSTR)info->Data)[i];
+                result[i] = 0;
+                ret = result;
+                TRACE( "using registry override of %s for %s\n", debugstr_a(result), category_name );
+            }
+
+            NtClose( wine_key );
+        }
+    }
+
     return ret;
 }
 
@@ -1109,7 +1190,7 @@ static UINT setup_unix_locales(void)
 {
     struct locale_name locale_name;
     WCHAR buffer[128], ctype_buff[128];
-    const char *locale;
+    const char * HOSTPTR locale;
     UINT unix_cp = 0;
 
     if ((locale = get_locale( LC_CTYPE, "LC_CTYPE" )))
@@ -1721,7 +1802,7 @@ INT WINAPI GetLocaleInfoW( LCID lcid, LCTYPE lctype, LPWSTR buffer, INT len )
                 ret = get_registry_locale_info( value, tmp, ARRAY_SIZE( tmp ));
                 if (ret > 0)
                 {
-                    WCHAR *end;
+                    WCHAR * HOSTPTR end;
                     UINT number = strtolW( tmp, &end, get_value_base_by_lctype( lctype ) );
                     if (*end)  /* invalid number */
                     {
@@ -1790,7 +1871,7 @@ INT WINAPI GetLocaleInfoW( LCID lcid, LCTYPE lctype, LPWSTR buffer, INT len )
     if (lcflags & LOCALE_RETURN_NUMBER)
     {
         UINT number;
-        WCHAR *end, *tmp = HeapAlloc( GetProcessHeap(), 0, (*p + 1) * sizeof(WCHAR) );
+        WCHAR * HOSTPTR end, *tmp = HeapAlloc( GetProcessHeap(), 0, (*p + 1) * sizeof(WCHAR) );
         if (!tmp) return 0;
         memcpy( tmp, p + 1, *p * sizeof(WCHAR) );
         tmp[*p] = 0;
@@ -2311,7 +2392,7 @@ BOOL WINAPI EnumSystemCodePagesW( CODEPAGE_ENUMPROCW lpfnCodePageEnum, DWORD fla
  * RETURNS
  *   TRUE on success, FALSE on error
  */
-static inline BOOL utf7_write_w(WCHAR *dst, int dstlen, int *index, WCHAR character)
+static inline BOOL utf7_write_w(WCHAR * HOSTPTR dst, int dstlen, int *index, WCHAR character)
 {
     if (dstlen > 0)
     {
@@ -2335,7 +2416,7 @@ static inline BOOL utf7_write_w(WCHAR *dst, int dstlen, int *index, WCHAR charac
  *   On success, the number of characters written
  *   On dst buffer overflow, -1
  */
-static int utf7_mbstowcs(const char *src, int srclen, WCHAR *dst, int dstlen)
+static int utf7_mbstowcs(const char * HOSTPTR src, int srclen, WCHAR * HOSTPTR dst, int dstlen)
 {
     static const signed char base64_decoding_table[] =
     {
@@ -2349,7 +2430,7 @@ static int utf7_mbstowcs(const char *src, int srclen, WCHAR *dst, int dstlen)
         41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, -1, -1, -1, -1, -1  /* 0x70-0x7F */
     };
 
-    const char *source_end = src + srclen;
+    const char * HOSTPTR source_end = src + srclen;
     int dest_index = 0;
 
     DWORD byte_pair = 0;
@@ -2451,8 +2532,19 @@ static int utf7_mbstowcs(const char *src, int srclen, WCHAR *dst, int dstlen)
  *            is passed, and ERROR_NO_UNICODE_TRANSLATION if no translation is
  *            possible for src.
  */
+#ifdef __i386_on_x86_64__
 INT WINAPI MultiByteToWideChar( UINT page, DWORD flags, LPCSTR src, INT srclen,
                                 LPWSTR dst, INT dstlen )
+{
+    return MultiByteToWideChar( page, flags, (const char * HOSTPTR)src, srclen,
+                                (WCHAR * HOSTPTR)dst, dstlen );
+}
+INT WINAPI MultiByteToWideChar( UINT page, DWORD flags, const char * HOSTPTR src, INT srclen,
+                                WCHAR * HOSTPTR dst, INT dstlen ) __attribute__((overloadable))
+#else
+INT WINAPI MultiByteToWideChar( UINT page, DWORD flags, LPCSTR src, INT srclen,
+                                LPWSTR dst, INT dstlen )
+#endif
 {
     const union cptable *table;
     int ret;
@@ -2561,7 +2653,7 @@ static inline BOOL utf7_can_directly_encode(WCHAR codepoint)
  * RETURNS
  *   TRUE on success, FALSE on error
  */
-static inline BOOL utf7_write_c(char *dst, int dstlen, int *index, char character)
+static inline BOOL utf7_write_c(char * HOSTPTR dst, int dstlen, int * HOSTPTR index, char character)
 {
     if (dstlen > 0)
     {
@@ -2585,12 +2677,12 @@ static inline BOOL utf7_write_c(char *dst, int dstlen, int *index, char characte
  *   On success, the number of characters written
  *   On dst buffer overflow, -1
  */
-static int utf7_wcstombs(const WCHAR *src, int srclen, char *dst, int dstlen)
+static int utf7_wcstombs(const WCHAR * HOSTPTR src, int srclen, char * HOSTPTR dst, int dstlen)
 {
     static const char base64_encoding_table[] =
         "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
-    const WCHAR *source_end = src + srclen;
+    const WCHAR * HOSTPTR source_end = src + srclen;
     int dest_index = 0;
 
     while (src < source_end)
@@ -2677,8 +2769,21 @@ static int utf7_wcstombs(const WCHAR *src, int srclen, char *dst, int dstlen)
  *            and dstlen != 0, and ERROR_INVALID_PARAMETER, if an invalid
  *            parameter was given.
  */
+#ifdef __i386_on_x86_64__
 INT WINAPI WideCharToMultiByte( UINT page, DWORD flags, LPCWSTR src, INT srclen,
                                 LPSTR dst, INT dstlen, LPCSTR defchar, BOOL *used )
+{
+    return WideCharToMultiByte( page, flags, (const WCHAR* HOSTPTR)src, srclen,
+                                (char* HOSTPTR)dst, dstlen, (const char* HOSTPTR)defchar,
+                                (BOOL * HOSTPTR)used );
+}
+INT WINAPI WideCharToMultiByte( UINT page, DWORD flags, const WCHAR * HOSTPTR src,
+                                INT srclen, char * HOSTPTR dst, INT dstlen,
+                                const char * HOSTPTR defchar, BOOL * HOSTPTR used ) __attribute__((overloadable))
+#else
+INT WINAPI WideCharToMultiByte( UINT page, DWORD flags, LPCWSTR src, INT srclen,
+                                LPSTR dst, INT dstlen, LPCSTR defchar, BOOL *used )
+#endif
 {
     const union cptable *table;
     int ret, used_tmp;
@@ -2728,6 +2833,10 @@ INT WINAPI WideCharToMultiByte( UINT page, DWORD flags, LPCWSTR src, INT srclen,
                                     defchar, used ? &used_tmp : NULL );
             break;
         }
+#ifdef __APPLE__
+        /* CodeWeavers HACK */
+        flags |= WC_COMPOSITECHECK;
+#endif
         /* fall through */
     case CP_UTF8:
         if (defchar || used)
@@ -3466,7 +3575,7 @@ INT WINAPI LCMapStringEx(LPCWSTR name, DWORD flags, LPCWSTR src, INT srclen, LPW
     if (lparam)
     {
         static int once;
-        if (!once++) FIXME("unsupported lparam %lx\n", lparam);
+        if (!once++) FIXME("unsupported lparam %lx\n", (unsigned long)lparam);
     }
 
     if (!src || !srclen || dstlen < 0)
@@ -4067,8 +4176,8 @@ INT WINAPI CompareStringOrdinal(const WCHAR *str1, INT len1, const WCHAR *str2, 
  */
 void LOCALE_Init(void)
 {
-    extern void CDECL __wine_init_codepages( const union cptable *ansi_cp, const union cptable *oem_cp,
-                                             const union cptable *unix_cp );
+    extern void CDECL __wine_init_codepages( const union cptable * WIN32PTR ansi_cp, const union cptable * WIN32PTR oem_cp,
+                                             const union cptable * WIN32PTR unix_cp );
 
     UINT ansi_cp = 1252, oem_cp = 437, mac_cp = 10000, unix_cp;
 
@@ -4125,7 +4234,9 @@ void LOCALE_Init(void)
             unix_cptable  = wine_cp_get_table( 28591 );
     }
 
-    __wine_init_codepages( ansi_cptable, oem_cptable, unix_cptable );
+    __wine_init_codepages( ADDRSPACECAST( union cptable * WIN32PTR, ansi_cptable ),
+                           ADDRSPACECAST( union cptable * WIN32PTR, oem_cptable ),
+                           ADDRSPACECAST( union cptable * WIN32PTR, unix_cptable ) );
 
     TRACE( "ansi=%03d oem=%03d mac=%03d unix=%03d\n",
            ansi_cptable->info.codepage, oem_cptable->info.codepage,
@@ -4351,7 +4462,7 @@ BOOL WINAPI EnumSystemLanguageGroupsA(LANGUAGEGROUP_ENUMPROCA pLangGrpEnumProc,
 {
     ENUMLANGUAGEGROUP_CALLBACKS procs;
 
-    TRACE("(%p,0x%08X,0x%08lX)\n", pLangGrpEnumProc, dwFlags, lParam);
+    TRACE("(%p,0x%08X,0x%08lX)\n", pLangGrpEnumProc, dwFlags, (unsigned long)lParam);
 
     procs.procA = pLangGrpEnumProc;
     procs.procW = NULL;
@@ -4371,7 +4482,7 @@ BOOL WINAPI EnumSystemLanguageGroupsW(LANGUAGEGROUP_ENUMPROCW pLangGrpEnumProc,
 {
     ENUMLANGUAGEGROUP_CALLBACKS procs;
 
-    TRACE("(%p,0x%08X,0x%08lX)\n", pLangGrpEnumProc, dwFlags, lParam);
+    TRACE("(%p,0x%08X,0x%08lX)\n", pLangGrpEnumProc, dwFlags, (unsigned long)lParam);
 
     procs.procA = NULL;
     procs.procW = pLangGrpEnumProc;
@@ -4550,7 +4661,7 @@ BOOL WINAPI EnumLanguageGroupLocalesA(LANGGROUPLOCALE_ENUMPROCA pLangGrpLcEnumPr
 {
     ENUMLANGUAGEGROUPLOCALE_CALLBACKS callbacks;
 
-    TRACE("(%p,0x%08X,0x%08X,0x%08lX)\n", pLangGrpLcEnumProc, lgrpid, dwFlags, lParam);
+    TRACE("(%p,0x%08X,0x%08X,0x%08lX)\n", pLangGrpLcEnumProc, lgrpid, dwFlags, (unsigned long)lParam);
 
     callbacks.procA   = pLangGrpLcEnumProc;
     callbacks.procW   = NULL;
@@ -4571,7 +4682,7 @@ BOOL WINAPI EnumLanguageGroupLocalesW(LANGGROUPLOCALE_ENUMPROCW pLangGrpLcEnumPr
 {
     ENUMLANGUAGEGROUPLOCALE_CALLBACKS callbacks;
 
-    TRACE("(%p,0x%08X,0x%08X,0x%08lX)\n", pLangGrpLcEnumProc, lgrpid, dwFlags, lParam);
+    TRACE("(%p,0x%08X,0x%08X,0x%08lX)\n", pLangGrpLcEnumProc, lgrpid, dwFlags, (unsigned long)lParam);
 
     callbacks.procA   = NULL;
     callbacks.procW   = pLangGrpLcEnumProc;
@@ -4608,7 +4719,7 @@ GEOID WINAPI GetUserGeoID( GEOCLASS GeoClass )
     GEOID ret = GEOID_NOT_AVAILABLE;
     static const WCHAR geoW[] = {'G','e','o',0};
     static const WCHAR nationW[] = {'N','a','t','i','o','n',0};
-    WCHAR bufferW[40], *end;
+    WCHAR bufferW[40], * HOSTPTR end;
     DWORD count;
     HANDLE hkey, hSubkey = 0;
     UNICODE_STRING keyW;
@@ -4714,7 +4825,7 @@ BOOL WINAPI EnumUILanguagesA(UILANGUAGE_ENUMPROCA pUILangEnumProc, DWORD dwFlags
 {
     ENUM_UILANG_CALLBACK enum_uilang;
 
-    TRACE("%p, %x, %lx\n", pUILangEnumProc, dwFlags, lParam);
+    TRACE("%p, %x, %lx\n", pUILangEnumProc, dwFlags, (unsigned long)lParam);
 
     if(!pUILangEnumProc) {
 	SetLastError(ERROR_INVALID_PARAMETER);
@@ -4742,7 +4853,7 @@ BOOL WINAPI EnumUILanguagesW(UILANGUAGE_ENUMPROCW pUILangEnumProc, DWORD dwFlags
 {
     ENUM_UILANG_CALLBACK enum_uilang;
 
-    TRACE("%p, %x, %lx\n", pUILangEnumProc, dwFlags, lParam);
+    TRACE("%p, %x, %lx\n", pUILangEnumProc, dwFlags, (unsigned long)lParam);
 
 
     if(!pUILangEnumProc) {
@@ -5914,7 +6025,7 @@ INT WINAPI FindNLSStringEx(const WCHAR *localename, DWORD flags, const WCHAR *sr
 
     TRACE("%s %x %s %d %s %d %p %p %p %ld\n", wine_dbgstr_w(localename), flags,
           wine_dbgstr_w(src), src_size, wine_dbgstr_w(value), value_size, found,
-          version_info, reserved, sort_handle);
+          version_info, reserved, (unsigned long)sort_handle);
 
     if (version_info != NULL || reserved != NULL || sort_handle != 0 ||
         !IsValidLocaleName(localename) || src == NULL || src_size == 0 ||

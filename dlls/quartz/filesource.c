@@ -903,7 +903,7 @@ static HRESULT WINAPI FileAsyncReader_Request(IAsyncReader * iface, IMediaSample
     REFERENCE_TIME Stop;
     LPBYTE pBuffer = NULL;
 
-    TRACE("%p->(%p, %lx)\n", This, pSample, dwUser);
+    TRACE("%p->(%p, %lx)\n", This, pSample, (unsigned long)dwUser);
 
     if (!pSample)
         return E_POINTER;

@@ -327,6 +327,21 @@ LONG WINAPI call_unhandled_exception_filter( PEXCEPTION_POINTERS eptr )
 }
 
 
+/*********************************************************************
+ *         NtContinue   (NTDLL.@)
+ */
+NTSTATUS WINAPI NtContinue( CONTEXT *context, BOOLEAN alert )
+{
+    TRACE( "(%p, %d) stub!\n", context, alert );
+
+    /* NtSetContextThread will not have the intended behavior for a partial context. */
+    if ((context->ContextFlags & CONTEXT_FULL) != CONTEXT_FULL)
+        return STATUS_NOT_IMPLEMENTED;
+
+    return NtSetContextThread( GetCurrentThread(), context );
+}
+
+
 /*************************************************************
  *            __wine_spec_unimplemented_stub
  *
@@ -353,12 +368,21 @@ void __cdecl __wine_spec_unimplemented_stub( const char *module, const char *fun
  *
  * IsBadStringPtrA replacement for ntdll, to catch exception in debug traces.
  */
+#ifdef __i386_on_x86_64__
 BOOL WINAPI IsBadStringPtrA( LPCSTR str, UINT_PTR max )
+{
+    return IsBadStringPtrA((const char * HOSTPTR)str, (ULONGLONG)max);
+}
+
+BOOL WINAPI IsBadStringPtrA( const char * HOSTPTR str, ULONGLONG max ) __attribute__((overloadable))
+#else
+BOOL WINAPI IsBadStringPtrA( LPCSTR str, UINT_PTR max )
+#endif
 {
     if (!str) return TRUE;
     __TRY
     {
-        volatile const char *p = str;
+        volatile const char * HOSTPTR p = str;
         while (p != str + max) if (!*p++) break;
     }
     __EXCEPT_PAGE_FAULT
@@ -375,12 +399,21 @@ BOOL WINAPI IsBadStringPtrA( LPCSTR str, UINT_PTR max )
  *
  * IsBadStringPtrW replacement for ntdll, to catch exception in debug traces.
  */
+#ifdef __i386_on_x86_64__
 BOOL WINAPI IsBadStringPtrW( LPCWSTR str, UINT_PTR max )
+{
+    return IsBadStringPtrW( (const WCHAR * HOSTPTR)str, (ULONGLONG)max );
+}
+
+BOOL WINAPI IsBadStringPtrW( const WCHAR * HOSTPTR str, ULONGLONG max ) __attribute__((overloadable))
+#else
+BOOL WINAPI IsBadStringPtrW( LPCWSTR str, UINT_PTR max )
+#endif
 {
     if (!str) return TRUE;
     __TRY
     {
-        volatile const WCHAR *p = str;
+        volatile const WCHAR * HOSTPTR p = str;
         while (p != str + max) if (!*p++) break;
     }
     __EXCEPT_PAGE_FAULT

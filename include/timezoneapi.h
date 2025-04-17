@@ -19,6 +19,8 @@
 #ifndef _APISETTIMEZONE_
 #define _APISETTIMEZONE_
 
+#include "wine/winheader_enter.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -28,5 +30,7 @@ WINBASEAPI DWORD WINAPI EnumDynamicTimeZoneInformation(const DWORD, DYNAMIC_TIME
 #ifdef __cplusplus
 }
 #endif
+
+#include "wine/winheader_exit.h"
 
 #endif  /* _APISETTIMEZONE_ */

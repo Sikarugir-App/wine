@@ -548,7 +548,7 @@ static LONG INTERNET_LoadProxySettings( proxyinfo_t *lpwpi )
 {
     HKEY key;
     DWORD type, len;
-    LPCSTR envproxy;
+    const char * HOSTPTR envproxy;
     LONG ret;
 
     memset( lpwpi, 0, sizeof(*lpwpi) );
@@ -2302,7 +2302,7 @@ static WCHAR *get_proxy_autoconfig_url(void)
     CFDictionaryRef settings = CFNetworkCopySystemProxySettings();
     WCHAR *ret = NULL;
     SIZE_T len;
-    const void *ref;
+    CFStringRef ref;
 
     if (!settings) return NULL;
 

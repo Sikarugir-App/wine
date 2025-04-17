@@ -134,9 +134,11 @@ static inline void close_semaphore( RTL_CRITICAL_SECTION *crit )
 
 #elif defined(__APPLE__)
 
+#define cpu_type_t mach_cpu_type_t
 #include <mach/mach.h>
 #include <mach/task.h>
 #include <mach/semaphore.h>
+#undef cpu_type_t
 
 static inline semaphore_t get_mach_semaphore( RTL_CRITICAL_SECTION *crit )
 {

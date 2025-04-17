@@ -19,6 +19,8 @@
 #ifndef __NCRYPT_H__
 #define __NCRYPT_H__
 
+#include "wine/winheader_enter.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -54,5 +56,7 @@ SECURITY_STATUS WINAPI NCryptOpenStorageProvider(NCRYPT_PROV_HANDLE *, const WCH
 #ifdef __cplusplus
 }
 #endif
+
+#include "wine/winheader_exit.h"
 
 #endif /* __NCRYPT_H__ */

@@ -51,14 +51,14 @@
 #include "wine/unicode.h"
 
 #ifdef HAVE_MACH_MACH_H
+#define cpu_type_t mach_cpu_type_t
 #include <mach/mach.h>
+#undef cpu_type_t
 #endif
 
 WINE_DEFAULT_DEBUG_CHANNEL(process);
 
 static ULONG execute_flags = MEM_EXECUTE_OPTION_DISABLE;
-
-static const BOOL is_win64 = (sizeof(void *) > sizeof(int));
 
 static const char * const cpu_names[] = { "x86", "x86_64", "PowerPC", "ARM", "ARM64" };
 
@@ -110,6 +110,18 @@ PEB * WINAPI RtlGetCurrentPeb(void)
 HANDLE CDECL __wine_make_process_system(void)
 {
     HANDLE ret = 0;
+
+    /*  CodeWeavers-specific hack:  We need to exclude ourselves
+        from the winewrapper's wait-children process.  So we'll
+        close the wait-children pipe if it is defined.  */
+    const char * HOSTPTR child_pipe = getenv("WINE_WAIT_CHILD_PIPE");
+    if (child_pipe)
+    {
+        int fd = atoi(child_pipe);
+        if (fd) close( fd );
+        unsetenv("WINE_WAIT_CHILD_PIPE");
+    }
+
     SERVER_START_REQ( make_process_system )
     {
         if (!wine_server_call( req )) ret = wine_server_ptr_handle( reply->event );
@@ -717,7 +729,7 @@ NTSTATUS WINAPI NtSetInformationProcess(
  */
 NTSTATUS WINAPI NtFlushInstructionCache( HANDLE handle, const void *addr, SIZE_T size )
 {
-#if defined(__x86_64__) || defined(__i386__)
+#if defined(__x86_64__) || defined(__i386__) || defined(__i386_on_x86_64__)
     /* no-op */
 #elif defined(HAVE___CLEAR_CACHE)
     if (handle == GetCurrentProcess())
@@ -800,11 +812,11 @@ NTSTATUS WINAPI NtSuspendProcess( HANDLE handle )
  * Build an argv array from a command-line.
  * 'reserved' is the number of args to reserve before the first one.
  */
-static char **build_argv( const UNICODE_STRING *cmdlineW, int reserved )
+static char * HOSTPTR *build_argv( const UNICODE_STRING *cmdlineW, int reserved )
 {
     int argc;
-    char **argv;
-    char *arg, *s, *d, *cmdline;
+    char * HOSTPTR *argv;
+    char * HOSTPTR arg, * HOSTPTR s, * HOSTPTR d, *cmdline;
     int in_quotes, bcount, len;
 
     len = ntdll_wcstoumbs( 0, cmdlineW->Buffer, cmdlineW->Length / sizeof(WCHAR), NULL, 0, NULL, NULL );
@@ -997,29 +1009,33 @@ static const char *get_alternate_loader( char **ret_env )
 {
     char *env;
     const char *loader = NULL;
-    const char *loader_env = getenv( "WINELOADER" );
+    const char * HOSTPTR loader_env = getenv( "WINELOADER" );
 
     *ret_env = NULL;
 
-    if (wine_get_build_dir()) loader = is_win64 ? "loader/wine" : "loader/wine64";
+    if (wine_get_build_dir()) loader = wine_is_64bit() ? wine_needs_32on64() ? "loader/wine32on64" : "loader/wine" : "loader/wine64";
 
     if (loader_env)
     {
         int len = strlen( loader_env );
-        if (!is_win64)
+        if (!wine_is_64bit())
         {
             if (!(env = RtlAllocateHeap( GetProcessHeap(), 0, sizeof("WINELOADER=") + len + 2 ))) return NULL;
             strcpy( env, "WINELOADER=" );
             strcat( env, loader_env );
+            len += sizeof("WINELOADER=") - 1;
+            if (!strcmp( env + len - 6, "32on64" )) env[len - 6] = 0;
             strcat( env, "64" );
         }
         else
         {
-            if (!(env = RtlAllocateHeap( GetProcessHeap(), 0, sizeof("WINELOADER=") + len ))) return NULL;
+            if (!(env = RtlAllocateHeap( GetProcessHeap(), 0, sizeof("WINELOADER=") + len + 6 ))) return NULL;
             strcpy( env, "WINELOADER=" );
             strcat( env, loader_env );
             len += sizeof("WINELOADER=") - 1;
             if (!strcmp( env + len - 2, "64" )) env[len - 2] = 0;
+            if (wine_needs_32on64())
+                strcat( env, "32on64" );
         }
         if (!loader)
         {
@@ -1028,7 +1044,7 @@ static const char *get_alternate_loader( char **ret_env )
         }
         *ret_env = env;
     }
-    if (!loader) loader = is_win64 ? "wine" : "wine64";
+    if (!loader) loader = wine_is_64bit() ? wine_needs_32on64() ? "wine32on64" : "wine" : "wine64";
     return loader;
 }
 
@@ -1063,12 +1079,12 @@ static NTSTATUS spawn_loader( const RTL_USER_PROCESS_PARAMETERS *params, int soc
     int stdin_fd = -1, stdout_fd = -1;
     char *wineloader = NULL;
     const char *loader = NULL;
-    char **argv;
+    char * HOSTPTR *argv;
     NTSTATUS status = STATUS_SUCCESS;
 
     argv = build_argv( &params->CommandLine, 1 );
 
-    if (!is_win64 ^ !is_64bit_arch( pe_info->cpu ))
+    if (!wine_is_64bit() ^ !is_64bit_arch( pe_info->cpu ))
         loader = get_alternate_loader( &wineloader );
 
     wine_server_handle_to_fd( params->hStdInput, FILE_READ_DATA, &stdin_fd, NULL );

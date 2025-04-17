@@ -39,7 +39,9 @@
 # include <unistd.h>
 #endif
 #ifdef __APPLE__
+# define cpu_type_t mach_cpu_type_t
 # include <mach/mach_time.h>
+# undef cpu_type_t
 #endif
 
 #include "ntstatus.h"
@@ -636,11 +638,11 @@ static BOOL match_tz_info(const RTL_DYNAMIC_TIME_ZONE_INFORMATION *tzi, const RT
     return FALSE;
 }
 
-static int compare_tz_key(const void *a, const void *b)
+static int compare_tz_key(const void * HOSTPTR a, const void * HOSTPTR b)
 {
-    const struct tz_name_map *map_a, *map_b;
-    map_a = (const struct tz_name_map *)a;
-    map_b = (const struct tz_name_map *)b;
+    const struct tz_name_map * HOSTPTR map_a, * HOSTPTR map_b;
+    map_a = (const struct tz_name_map * HOSTPTR)a;
+    map_b = (const struct tz_name_map * HOSTPTR)b;
     return strcmpW(map_a->key_name, map_b->key_name);
 }
 
@@ -664,7 +666,7 @@ static BOOL match_tz_name(const char* tz_name,
         return TRUE;
 
     strcpyW(key.key_name, reg_tzi->TimeZoneKeyName);
-    match = bsearch(&key, mapping, ARRAY_SIZE(mapping), sizeof(mapping[0]), compare_tz_key);
+    match = ADDRSPACECAST(struct tz_name_map * WIN32PTR, bsearch(&key, mapping, ARRAY_SIZE(mapping), sizeof(mapping[0]), compare_tz_key));
     if (!match)
         return TRUE;
 

@@ -21,6 +21,8 @@
 #ifndef __WINE_WINDNS_H
 #define __WINE_WINDNS_H
 
+#include "wine/winheader_enter.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -738,5 +740,7 @@ BOOL WINAPI DnsWriteQuestionToBuffer_UTF8(PDNS_MESSAGE_BUFFER,PDWORD,PCSTR,WORD,
 #ifdef __cplusplus
 }
 #endif
+
+#include "wine/winheader_exit.h"
 
 #endif

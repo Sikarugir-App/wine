@@ -172,7 +172,7 @@ static BOOL is_option(const WCHAR* arg, const WCHAR* opt)
                           arg, -1, opt, -1) == CSTR_EQUAL;
 }
 
-int wmain (int argc, WCHAR *argv[])
+int __cdecl wmain (int argc, WCHAR *argv[])
 {
 	SHELLEXECUTEINFOW sei;
 	DWORD creation_flags;

@@ -1585,7 +1585,7 @@ UINT WINAPI GetOutlineTextMetricsA(
     left = needed - sizeof(*output);
 
     if(lpOTMW->otmpFamilyName) {
-        output->otmpFamilyName = (LPSTR)(ptr - (char*)output);
+        output->otmpFamilyName = TRUNCCAST(LPSTR, ptr - (char*)output);
 	len = WideCharToMultiByte(CP_ACP, 0,
 	     (WCHAR*)((char*)lpOTMW + (ptrdiff_t)lpOTMW->otmpFamilyName), -1,
 				  ptr, left, NULL, NULL);
@@ -1595,7 +1595,7 @@ UINT WINAPI GetOutlineTextMetricsA(
         output->otmpFamilyName = 0;
 
     if(lpOTMW->otmpFaceName) {
-        output->otmpFaceName = (LPSTR)(ptr - (char*)output);
+        output->otmpFaceName = TRUNCCAST(LPSTR, ptr - (char*)output);
 	len = WideCharToMultiByte(CP_ACP, 0,
 	     (WCHAR*)((char*)lpOTMW + (ptrdiff_t)lpOTMW->otmpFaceName), -1,
 				  ptr, left, NULL, NULL);
@@ -1605,7 +1605,7 @@ UINT WINAPI GetOutlineTextMetricsA(
         output->otmpFaceName = 0;
 
     if(lpOTMW->otmpStyleName) {
-        output->otmpStyleName = (LPSTR)(ptr - (char*)output);
+        output->otmpStyleName = TRUNCCAST(LPSTR, ptr - (char*)output);
 	len = WideCharToMultiByte(CP_ACP, 0,
 	     (WCHAR*)((char*)lpOTMW + (ptrdiff_t)lpOTMW->otmpStyleName), -1,
 				  ptr, left, NULL, NULL);
@@ -1615,7 +1615,7 @@ UINT WINAPI GetOutlineTextMetricsA(
         output->otmpStyleName = 0;
 
     if(lpOTMW->otmpFullName) {
-        output->otmpFullName = (LPSTR)(ptr - (char*)output);
+        output->otmpFullName = TRUNCCAST(LPSTR, ptr - (char*)output);
 	len = WideCharToMultiByte(CP_ACP, 0,
 	     (WCHAR*)((char*)lpOTMW + (ptrdiff_t)lpOTMW->otmpFullName), -1,
 				  ptr, left, NULL, NULL);
@@ -2145,14 +2145,16 @@ BOOL WINAPI ExtTextOutA( HDC hdc, INT x, INT y, UINT flags,
     LPWSTR p;
     BOOL ret;
     LPINT lpDxW = NULL;
+    unsigned int i;
 
     if (flags & ETO_GLYPH_INDEX)
         return ExtTextOutW( hdc, x, y, flags, lprect, (LPCWSTR)str, count, lpDx );
 
-    p = FONT_mbtowc(hdc, str, count, &wlen, &codepage);
+    if(GetObjectType(hdc) != OBJ_METADC) {
+        p = FONT_mbtowc(hdc, str, count, &wlen, &codepage);
 
-    if (lpDx) {
-        unsigned int i = 0, j = 0;
+        if (lpDx) {
+            unsigned int i = 0, j = 0;
 
         /* allocate enough for a ETO_PDY */
         lpDxW = HeapAlloc( GetProcessHeap(), 0, 2*wlen*sizeof(INT));
@@ -2179,6 +2181,18 @@ BOOL WINAPI ExtTextOutA( HDC hdc, INT x, INT y, UINT flags,
                     lpDxW[j++] = lpDx[i];
                 i = i + 1;
             }
+        }
+        }
+    } else { /* Special case for metafiles.  Just do a straight copy */
+        p = HeapAlloc(GetProcessHeap(), 0, (count + 1) * sizeof(WCHAR));
+	for(i = 0; i < count; i++)
+            p[i] = (BYTE)str[i];
+        p[count] = '\0';
+        wlen = count;
+        if(lpDx) {
+            lpDxW = HeapAlloc(GetProcessHeap(), 0, count * sizeof(INT));
+            for(i = 0; i < count; i++)
+                lpDxW[i] = lpDx[i];
         }
     }
 

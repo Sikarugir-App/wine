@@ -429,25 +429,15 @@ static BOOL get_win9x_registry_version( RTL_OSVERSIONINFOEXW *version )
 
 
 /**********************************************************************
- *         parse_win_version
- *
- * Parse the contents of the Version key.
+ *         parse_version_string
  */
-static BOOL parse_win_version( HANDLE hkey )
+static BOOL parse_version_string( const WCHAR *str, DWORD length )
 {
-    static const WCHAR VersionW[] = {'V','e','r','s','i','o','n',0};
-
-    UNICODE_STRING valueW;
-    char tmp[64], buffer[50];
-    KEY_VALUE_PARTIAL_INFORMATION *info = (KEY_VALUE_PARTIAL_INFORMATION *)tmp;
-    DWORD count, len;
     int i;
+    DWORD len;
+    char buffer[50];
 
-    RtlInitUnicodeString( &valueW, VersionW );
-    if (NtQueryValueKey( hkey, &valueW, KeyValuePartialInformation, tmp, sizeof(tmp), &count ))
-        return FALSE;
-
-    RtlUnicodeToMultiByteN( buffer, sizeof(buffer)-1, &len, (WCHAR *)info->Data, info->DataLength );
+    RtlUnicodeToMultiByteN( buffer, sizeof(buffer)-1, &len, str, length );
     buffer[len] = 0;
 
     for (i = 0; i < NB_WINDOWS_VERSIONS; i++)
@@ -481,6 +471,27 @@ static BOOL parse_win_version( HANDLE hkey )
     return FALSE;
 }
 
+/**********************************************************************
+ *         parse_win_version
+ *
+ * Parse the contents of the Version key.
+ */
+static BOOL parse_win_version( HKEY hkey )
+{
+    static const WCHAR VersionW[] = {'V','e','r','s','i','o','n',0};
+
+    UNICODE_STRING valueW;
+    char tmp[64];
+    KEY_VALUE_PARTIAL_INFORMATION *info = (KEY_VALUE_PARTIAL_INFORMATION *)tmp;
+    DWORD count;
+
+    RtlInitUnicodeString( &valueW, VersionW );
+    if (NtQueryValueKey( hkey, &valueW, KeyValuePartialInformation, tmp, sizeof(tmp), &count ))
+        return FALSE;
+
+    return parse_version_string( (WCHAR *)info->Data, info->DataLength );
+}
+
 
 /**********************************************************************
  *         version_init
@@ -495,6 +506,23 @@ void version_init( const WCHAR *appname )
     BOOL got_win_ver = FALSE;
 
     current_version = &VersionData[WIN7];
+
+    /* awful CrossOver hack^H^H^H^Hproprietary enhancement */
+    {
+        static const WCHAR cxverW[] = {'C','X','_','W','I','N','D','O','W','S','_','V','E','R','S','I','O','N',0};
+        UNICODE_STRING valueW;
+        WCHAR cxversion[32];
+
+        RtlInitUnicodeString( &nameW, cxverW );
+        valueW.MaximumLength = sizeof(cxversion);
+        valueW.Buffer = cxversion;
+        if (RtlQueryEnvironmentVariable_U(NULL, &nameW, &valueW) == STATUS_SUCCESS)
+        {
+            TRACE( "getting version from CX_WINDOWS_VERSION\n" );
+            got_win_ver = parse_version_string( cxversion, strlenW(cxversion) * sizeof(WCHAR) );
+            goto done;
+        }
+    }
 
     RtlOpenCurrentUser( KEY_ALL_ACCESS, &root );
     attr.Length = sizeof(attr);

@@ -75,9 +75,9 @@ typedef unsigned __int64 MSVCRT_size_t;
 typedef __int64 MSVCRT_intptr_t;
 typedef unsigned __int64 MSVCRT_uintptr_t;
 #else
-typedef unsigned long MSVCRT_size_t;
-typedef long MSVCRT_intptr_t;
-typedef unsigned long MSVCRT_uintptr_t;
+typedef unsigned __int32 MSVCRT_size_t;
+typedef __int32 MSVCRT_intptr_t;
+typedef unsigned __int32 MSVCRT_uintptr_t;
 #endif
 #ifdef _CRTDLL
 typedef short MSVCRT__dev_t;
@@ -495,20 +495,20 @@ struct MSVCRT__heapinfo {
   int            _useflag;
 };
 
-#ifdef __i386__
+#if defined(__i386__) || defined(__i386_on_x86_64__)
 struct MSVCRT___JUMP_BUFFER {
-    unsigned long Ebp;
-    unsigned long Ebx;
-    unsigned long Edi;
-    unsigned long Esi;
-    unsigned long Esp;
-    unsigned long Eip;
-    unsigned long Registration;
-    unsigned long TryLevel;
+    unsigned __int32 Ebp;
+    unsigned __int32 Ebx;
+    unsigned __int32 Edi;
+    unsigned __int32 Esi;
+    unsigned __int32 Esp;
+    unsigned __int32 Eip;
+    unsigned __int32 Registration;
+    unsigned __int32 TryLevel;
     /* Start of new struct members */
-    unsigned long Cookie;
-    unsigned long UnwindFunc;
-    unsigned long UnwindData[6];
+    unsigned __int32 Cookie;
+    unsigned __int32 UnwindFunc;
+    unsigned __int32 UnwindData[6];
 };
 #elif defined(__x86_64__)
 struct MSVCRT__SETJMP_FLOAT128

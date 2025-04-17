@@ -188,7 +188,9 @@ static const char * const atom_names[NB_XATOMS - FIRST_XATOM] =
     "text/plain",
     "text/rtf",
     "text/richtext",
-    "text/uri-list"
+    "text/uri-list",
+    "_CX_WORKAREA", /* CodeWeavers Hack bug 5752 */
+    "_CX_APPLEWM_TAG", /* CodeWeavers Hack bug 9517 */
 };
 
 /***********************************************************************
@@ -275,13 +277,16 @@ static int error_handler( Display *display, XErrorEvent *error_evt )
                error_evt->error_code, error_evt->request_code );
         return 0;
     }
+    ERR("XERROR: code %d request %d minor %d xid %08lx\n",
+        error_evt->error_code,
+        error_evt->request_code,
+        error_evt->minor_code,
+        error_evt->resourceid);
     if (TRACE_ON(synchronous))
     {
-        ERR( "X protocol error: serial=%ld, request_code=%d - breaking into debugger\n",
-             error_evt->serial, error_evt->request_code );
         DebugBreak();  /* force an entry in the debugger */
+        old_error_handler( display, error_evt );
     }
-    old_error_handler( display, error_evt );
     return 0;
 }
 
@@ -414,6 +419,15 @@ static void setup_options(void)
         alloc_system_colors = atoi(buffer);
 
     get_config_key( hkey, appkey, "InputStyle", input_style, sizeof(input_style) );
+
+    if (!get_config_key(hkey, appkey, "NvThreads", buffer, sizeof(buffer)))
+    {
+        if (IS_OPTION_TRUE(buffer[0]))
+        {
+            setenv("__GL_THREADED_OPTIMIZATIONS", "1", 1);
+            SetEnvironmentVariableA("__GL_THREADED_OPTIMIZATIONS", "1");
+        }
+    }
 
     if (appkey) RegCloseKey( appkey );
     if (hkey) RegCloseKey( hkey );

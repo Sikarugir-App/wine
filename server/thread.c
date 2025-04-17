@@ -53,14 +53,14 @@
 #include "security.h"
 
 
-#ifdef __i386__
+#if defined(__i386__) || defined(__i386_on_x86_64__)
 static const unsigned int supported_cpus = CPU_FLAG(CPU_x86);
 #elif defined(__x86_64__)
 static const unsigned int supported_cpus = CPU_FLAG(CPU_x86_64) | CPU_FLAG(CPU_x86);
 #elif defined(__powerpc__)
 static const unsigned int supported_cpus = CPU_FLAG(CPU_POWERPC);
 #elif defined(__arm__)
-static const unsigned int supported_cpus = CPU_FLAG(CPU_ARM);
+static const unsigned int supported_cpus = CPU_FLAG(CPU_ARM) | CPU_FLAG(CPU_x86);
 #elif defined(__aarch64__)
 static const unsigned int supported_cpus = CPU_FLAG(CPU_ARM64) | CPU_FLAG(CPU_ARM);
 #else

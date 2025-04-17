@@ -21,6 +21,7 @@
 #include "main.h"
 
 #include "wine/debug.h"
+#include "wine/unicode.h"
 
 WINE_DEFAULT_DEBUG_CHANNEL(oleview);
 
@@ -606,7 +607,7 @@ static int EnumFuncs(ITypeInfo *pTypeInfo, TYPEATTR *pTypeAttr, HTREEITEM hParen
 
         if(pTypeAttr->wTypeFlags & TYPEFLAG_FOLEAUTOMATION) {
             AddToTLDataStrW(tld, wszVT_HRESULT);
-            if(lstrcmpW(wszText, wszVT_VOID)) pFuncDesc->cParams++;
+            if(strcmpW(wszText, wszVT_VOID)) pFuncDesc->cParams++;
         }
         else {
             AddToTLDataStrW(tld, wszText);

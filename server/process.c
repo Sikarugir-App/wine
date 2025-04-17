@@ -339,6 +339,66 @@ static void kill_all_processes(void);
 
 #define PTID_OFFSET 8  /* offset for first ptid value */
 
+/* crossover usage logging support */
+
+#include <sys/types.h>
+#include <sys/stat.h>
+#include "wine/library.h"
+#include "wine/unicode.h"
+
+static void log_process_event( struct process *process, const char *fmt, ... )
+{
+    static unsigned int bottle_inode = 0;
+    const char *name = getenv( "CX_WINE_USAGE_LOGFILE" );
+    const char *appid = getenv( "CX_BOTTLE_CREATOR_APPID" );
+    struct process_dll *exe;
+    char *ptr, *buffer, prefix[128], bottleid[12];
+    int fd, len1, len2, len3, len4;
+    va_list args;
+
+    appid = appid ? appid : "--unknown--";    
+
+    if (!name || name[0] != '/') return;  /* needs to be an absolute path */
+
+    if ((fd = open( name, O_WRONLY | O_APPEND | O_CREAT, 0600 )) == -1) return;
+
+    if (!list_head( &process->dlls )) goto done;
+    exe = LIST_ENTRY( list_head( &process->dlls ), struct process_dll, entry );
+
+    if (!bottle_inode)
+    {
+        struct stat st;
+        if (!stat( wine_get_config_dir(), &st ))
+            bottle_inode = st.st_ino;
+    }
+
+    va_start( args, fmt );
+    len1 = vsnprintf( prefix, sizeof(prefix), fmt, args );
+    va_end( args );
+    len2 = snprintf( bottleid, sizeof(bottleid), "%u ", bottle_inode );
+    len3 = wine_utf8_wcstombs( 0, exe->filename, exe->namelen/sizeof(WCHAR), NULL, 0 );
+    len4 = strlen( appid );
+
+    if (len1 < 0 || len1 >= sizeof(prefix) ||
+        len2 < 0 || len2 >= sizeof(bottleid) ||
+        len3 < 0)
+        goto done;
+    if (!(buffer = ptr = malloc( len1 + len2 + len3 + len4 + 3 ))) goto done;
+    memcpy( ptr, prefix, len1 );
+    ptr += len1;
+    memcpy( ptr, bottleid, len2 );
+    ptr += len2;
+    ptr += wine_utf8_wcstombs( 0, exe->filename, exe->namelen/sizeof(WCHAR), ptr, len3 );
+    *ptr++ = ' ';
+    memcpy( ptr, appid, len4 );
+    ptr += len4;
+    *ptr++ = '\n';
+    write( fd, buffer, ptr - buffer );
+    free( buffer );
+done:
+    close( fd );
+}
+
 /* allocate a new process or thread id */
 unsigned int alloc_ptid( void *ptr )
 {
@@ -533,6 +593,7 @@ struct process *create_process( int fd, struct process *parent, int inherit_all,
     list_init( &process->locks );
     list_init( &process->asyncs );
     list_init( &process->classes );
+    list_init( &process->surfaces );
     list_init( &process->views );
     list_init( &process->dlls );
     list_init( &process->rawinput_devices );
@@ -896,6 +957,9 @@ static void process_killed( struct process *process )
     /* close the console attached to this process, if any */
     free_console( process );
 
+    if (!process->is_system)
+        log_process_event( process, "exit %x %u ", process->exit_code, (unsigned)((process->end_time-process->start_time)/TICKS_PER_SEC) );
+
     while ((ptr = list_head( &process->rawinput_devices )))
     {
         struct rawinput_device_entry *entry = LIST_ENTRY( ptr, struct rawinput_device_entry, entry );
@@ -912,6 +976,7 @@ static void process_killed( struct process *process )
     destroy_process_classes( process );
     free_mapped_views( process );
     free_process_user_handles( process );
+    remove_process_surfaces( process );
     remove_process_locks( process );
     set_process_startup_state( process, STARTUP_ABORTED );
     finish_process_tracing( process );

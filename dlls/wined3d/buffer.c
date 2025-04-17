@@ -239,7 +239,11 @@ static BOOL wined3d_buffer_gl_create_buffer_object(struct wined3d_buffer_gl *buf
         TRACE("Buffer has WINED3DUSAGE_DYNAMIC set.\n");
         gl_usage = GL_STREAM_DRAW_ARB;
 
-        if (gl_info->supported[APPLE_FLUSH_BUFFER_RANGE])
+        if (cxgames_hacks.allow_glmapbuffer == WINED3D_MAPBUF_NEVER)
+        {
+            buffer_gl->b.flags |= WINED3D_BUFFER_PIN_SYSMEM;
+        }
+        else if (gl_info->supported[APPLE_FLUSH_BUFFER_RANGE])
         {
             GL_EXTCALL(glBufferParameteriAPPLE(buffer_gl->buffer_type_hint,
                     GL_BUFFER_FLUSHING_UNMAP_APPLE, GL_FALSE));
@@ -249,6 +253,10 @@ static BOOL wined3d_buffer_gl_create_buffer_object(struct wined3d_buffer_gl *buf
             buffer_gl->b.flags |= WINED3D_BUFFER_APPLESYNC;
         }
         /* No setup is needed here for GL_ARB_map_buffer_range. */
+    }
+    else if (cxgames_hacks.allow_glmapbuffer == WINED3D_MAPBUF_NEVER)
+    {
+        buffer_gl->b.flags |= WINED3D_BUFFER_PIN_SYSMEM;
     }
 
     GL_EXTCALL(glBufferData(buffer_gl->buffer_type_hint, buffer_gl->b.resource.size, NULL, gl_usage));
@@ -1090,16 +1098,16 @@ static HRESULT wined3d_buffer_gl_map(struct wined3d_buffer_gl *buffer_gl,
                 if (gl_info->supported[ARB_MAP_BUFFER_RANGE])
                 {
                     GLbitfield mapflags = wined3d_resource_gl_map_flags(flags);
-                    buffer_gl->b.map_ptr = GL_EXTCALL(glMapBufferRange(buffer_gl->buffer_type_hint,
-                            0, buffer_gl->b.resource.size, mapflags));
+                    buffer_gl->b.map_ptr = ADDRSPACECAST(void*, GL_EXTCALL(glMapBufferRange(buffer_gl->buffer_type_hint,
+                            0, buffer_gl->b.resource.size, mapflags)));
                     checkGLcall("glMapBufferRange");
                 }
                 else
                 {
                     if (buffer_gl->b.flags & WINED3D_BUFFER_APPLESYNC)
                         wined3d_buffer_gl_sync_apple(buffer_gl, flags, gl_info);
-                    buffer_gl->b.map_ptr = GL_EXTCALL(glMapBuffer(buffer_gl->buffer_type_hint,
-                            GL_READ_WRITE));
+                    buffer_gl->b.map_ptr = ADDRSPACECAST(void*, GL_EXTCALL(glMapBuffer(buffer_gl->buffer_type_hint,
+                            GL_READ_WRITE)));
                     checkGLcall("glMapBuffer");
                 }
 

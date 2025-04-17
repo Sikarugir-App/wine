@@ -146,6 +146,19 @@ static DWORD get_device_index(WORD vid, WORD pid, WORD input)
     return index;
 }
 
+DEVICE_OBJECT* find_device_by_uid(DWORD uid)
+{
+    struct pnp_device *ptr;
+
+    LIST_FOR_EACH_ENTRY(ptr, &pnp_devset, struct pnp_device, entry)
+    {
+        struct device_extension *ext = (struct device_extension *)ptr->device->DeviceExtension;
+        if (ext->uid == uid)
+            return ptr->device;
+    }
+    return NULL;
+}
+
 static WCHAR *get_instance_id(DEVICE_OBJECT *device)
 {
     static const WCHAR formatW[] =  {'%','i','&','%','s','&','%','x','&','%','i',0};
@@ -303,7 +316,7 @@ error:
     return device;
 }
 
-DEVICE_OBJECT *bus_find_hid_device(const platform_vtbl *vtbl, void *platform_dev)
+DEVICE_OBJECT *bus_find_hid_device(const platform_vtbl *vtbl, void * HOSTPTR platform_dev)
 {
     struct pnp_device *dev;
     DEVICE_OBJECT *ret = NULL;
@@ -690,7 +703,7 @@ static NTSTATUS WINAPI hid_internal_dispatch(DEVICE_OBJECT *device, IRP *irp)
     return status;
 }
 
-void process_hid_report(DEVICE_OBJECT *device, BYTE *report, DWORD length)
+void process_hid_report(DEVICE_OBJECT *device, BYTE * HOSTPTR report, DWORD length)
 {
     struct device_extension *ext = (struct device_extension*)device->DeviceExtension;
     IRP *irp;
@@ -846,6 +859,8 @@ NTSTATUS WINAPI DriverEntry( DRIVER_OBJECT *driver, UNICODE_STRING *path )
 {
     static const WCHAR SDL_enabledW[] = {'E','n','a','b','l','e',' ','S','D','L',0};
     static const UNICODE_STRING SDL_enabled = {sizeof(SDL_enabledW) - sizeof(WCHAR), sizeof(SDL_enabledW), (WCHAR*)SDL_enabledW};
+    static const WCHAR xboxW[] = {'\\','D','r','i','v','e','r','\\','X','B','O','X','3','6','0',0};
+    static UNICODE_STRING xbox = {sizeof(xboxW) - sizeof(WCHAR), sizeof(xboxW), (WCHAR *)xboxW};
     OBJECT_ATTRIBUTES attr = {0};
     NTSTATUS ret;
 
@@ -868,10 +883,14 @@ NTSTATUS WINAPI DriverEntry( DRIVER_OBJECT *driver, UNICODE_STRING *path )
     if (check_bus_option(&SDL_enabled, 1))
     {
         if (sdl_driver_init() == STATUS_SUCCESS)
+        {
+            xbox_driver_init();
             return STATUS_SUCCESS;
+        }
     }
     udev_driver_init();
     iohid_driver_init();
+    xbox_driver_init();
 
     return STATUS_SUCCESS;
 }

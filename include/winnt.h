@@ -21,6 +21,8 @@
 #ifndef _WINNT_
 #define _WINNT_
 
+#include "wine/winheader_enter.h"
+
 #include <basetsd.h>
 #include <guiddef.h>
 
@@ -907,7 +909,7 @@ typedef enum _HEAP_INFORMATION_CLASS {
 /* The Win32 register context */
 
 /* i386 context definitions */
-#ifdef __i386__
+#if defined(__i386__) || defined(__i386_on_x86_64__)
 
 #define SIZE_OF_80387_REGISTERS      80
 
@@ -1013,7 +1015,7 @@ typedef struct _LDT_ENTRY {
 } LDT_ENTRY, *PLDT_ENTRY, WOW64_LDT_ENTRY, *PWOW64_LDT_ENTRY;
 
 /* x86-64 context definitions */
-#if defined(__x86_64__)
+#if defined(__x86_64__) && !defined(__i386_on_x86_64__)
 
 #define CONTEXT_AMD64   0x00100000
 
@@ -2498,7 +2500,7 @@ typedef struct _NT_TIB
 
 struct _TEB;
 
-#if defined(__i386__) && defined(__GNUC__) && ((__GNUC__ > 3) || ((__GNUC__ == 3) && (__GNUC_MINOR__ >= 2)))
+#if (defined(__i386__) || defined(__i386_on_x86_64__)) && defined(__GNUC__) && ((__GNUC__ > 3) || ((__GNUC__ == 3) && (__GNUC_MINOR__ >= 2)))
 static FORCEINLINE struct _TEB * WINAPI NtCurrentTeb(void)
 {
     struct _TEB *teb;
@@ -2996,9 +2998,25 @@ typedef struct _IMAGE_SECTION_HEADER {
 
 #define	IMAGE_SIZEOF_SECTION_HEADER 40
 
+#ifdef __i386_on_x86_64__
+static inline PIMAGE_SECTION_HEADER IMAGE_FIRST_SECTION(const void * ntheader)
+{
+    const IMAGE_NT_HEADERS* hdr = ntheader;
+    return ((PIMAGE_SECTION_HEADER)(ULONG_PTR)((const BYTE *)&hdr->OptionalHeader + \
+                           hdr->FileHeader.SizeOfOptionalHeader));
+}
+
+static inline IMAGE_SECTION_HEADER* HOSTPTR IMAGE_FIRST_SECTION(const void * HOSTPTR ntheader) __attribute__((overloadable))
+{
+    const IMAGE_NT_HEADERS* HOSTPTR hdr = ntheader;
+    return ((IMAGE_SECTION_HEADER* HOSTPTR)(ULONG_HOSTPTR)((const BYTE * HOSTPTR)&hdr->OptionalHeader + \
+                           hdr->FileHeader.SizeOfOptionalHeader));
+}
+#else
 #define IMAGE_FIRST_SECTION(ntheader) \
   ((PIMAGE_SECTION_HEADER)(ULONG_PTR)((const BYTE *)&((const IMAGE_NT_HEADERS *)(ntheader))->OptionalHeader + \
                            ((const IMAGE_NT_HEADERS *)(ntheader))->FileHeader.SizeOfOptionalHeader))
+#endif
 
 /* These defines are for the Characteristics bitfield. */
 /* #define IMAGE_SCN_TYPE_REG			0x00000000 - Reserved */
@@ -6523,5 +6541,7 @@ typedef enum _PROCESS_MITIGATION_POLICY
 #ifdef __cplusplus
 }
 #endif
+
+#include "wine/winheader_exit.h"
 
 #endif  /* _WINNT_ */

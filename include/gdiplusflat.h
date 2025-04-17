@@ -19,6 +19,8 @@
 #ifndef _FLATAPI_H
 #define _FLATAPI_H
 
+#include "wine/winheader_enter.h"
+
 #define WINGDIPAPI __stdcall
 
 #define GDIPCONST const
@@ -756,5 +758,7 @@ GpStatus WINGDIPAPI GdipTestControl(GpTestControlEnum,void*);
 #ifdef __cplusplus
 }
 #endif
+
+#include "wine/winheader_exit.h"
 
 #endif

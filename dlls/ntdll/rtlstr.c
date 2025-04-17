@@ -56,8 +56,8 @@ static const union cptable* unix_table; /* NULL if UTF8 */
  *
  * Set the code page once kernel32 is loaded. Should be done differently.
  */
-void CDECL __wine_init_codepages( const union cptable *ansi, const union cptable *oem,
-                                  const union cptable *ucp)
+void CDECL __wine_init_codepages( const union cptable * WIN32PTR ansi, const union cptable * WIN32PTR oem,
+                                  const union cptable * WIN32PTR ucp)
 {
     ansi_table = ansi;
     oem_table = oem;
@@ -65,7 +65,7 @@ void CDECL __wine_init_codepages( const union cptable *ansi, const union cptable
     NlsAnsiCodePage = ansi->info.codepage;
 }
 
-int ntdll_umbstowcs(DWORD flags, const char* src, int srclen, WCHAR* dst, int dstlen)
+int ntdll_umbstowcs(DWORD flags, const char* HOSTPTR src, int srclen, WCHAR* dst, int dstlen)
 {
 #ifdef __APPLE__
     /* work around broken Mac OS X filesystem that enforces decomposed Unicode */
@@ -82,7 +82,22 @@ int ntdll_wcstoumbs(DWORD flags, const WCHAR* src, int srclen, char* dst, int ds
     if (unix_table)
         return wine_cp_wcstombs( unix_table, flags, src, srclen, dst, dstlen, defchar, used );
     if (used) *used = 0;  /* all chars are valid for UTF-8 */
+#ifdef __APPLE__
+    /* CodeWeavers HACK */
+    flags |= WC_COMPOSITECHECK;
+#endif
     return wine_utf8_wcstombs( flags, src, srclen, dst, dstlen );
+}
+
+int ntdll_ambstowcs(WCHAR **dstptr, const char* HOSTPTR src)
+{
+    int srclen = strlen(src) + 1;
+    int dstlen = wine_cp_mbstowcs( ansi_table, 0, src, srclen, NULL, 0 );
+
+    if (!(*dstptr = RtlAllocateHeap( GetProcessHeap(), 0, dstlen * sizeof(WCHAR) )))
+        return -1;
+
+    return wine_cp_mbstowcs( ansi_table, 0, src, srclen, *dstptr, dstlen );
 }
 
 /**************************************************************************

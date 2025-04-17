@@ -391,8 +391,11 @@ void WINAPI DECLSPEC_HOTPATCH OutputDebugStringW( LPCWSTR str )
  *  Raises an exception so that a debugger (if attached)
  *  can take some action.
  */
-#if defined(__i386__) || defined(__x86_64__)
+#if defined(__i386__) || defined(__x86_64__) || defined(__i386_on_x86_64__)
 __ASM_STDCALL_FUNC( DebugBreak, 0, "jmp " __ASM_NAME("DbgBreakPoint") )
+#ifdef __i386_on_x86_64__
+__ASM_THUNK_STDCALL( DebugBreak, 0, "jmp " __ASM_THUNK_SYMBOL("DbgBreakPoint") )
+#endif
 #else
 void WINAPI DebugBreak(void)
 {

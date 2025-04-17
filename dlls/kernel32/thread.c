@@ -241,7 +241,7 @@ BOOL WINAPI SetThreadContext( HANDLE handle,           /* [in]  Handle to thread
  */
 BOOL WINAPI Wow64SetThreadContext( HANDLE handle, const WOW64_CONTEXT *context)
 {
-#ifdef __i386__
+#if defined(__i386__) || defined(__i386_on_x86_64__)
     NTSTATUS status = NtSetContextThread( handle, (const CONTEXT *)context );
 #elif defined(__x86_64__)
     NTSTATUS status = RtlWow64SetThreadContext( handle, context );
@@ -264,9 +264,64 @@ BOOL WINAPI GetThreadContext( HANDLE handle,     /* [in]  Handle to thread with 
                               CONTEXT *context ) /* [out] Address of context structure */
 {
     NTSTATUS status = NtGetContextThread( handle, context );
+
+#if defined(__i386__) || defined(__i386_on_x86_64__)
+    /* CXHACK 15388 */
+    if(!status)
+    {
+        char name[MAX_PATH], *p;
+        GetModuleFileNameA(GetModuleHandleA(NULL), name, sizeof(name));
+        p = strrchr(name, '\\');
+        p = p ? p+1 : name;
+        if(!strcasecmp(p, "rundll32.exe"))
+        {
+            /* Awesomium shipped with Quicken uses rundll32.exe to create new processes
+             * and replaces their entry points so that they actually run intended code.
+             * To replace entry point, a new suspended instance is created and
+             * GetThreadContext is called. Further code assumes that at this point
+             * ebx points to TEB and does more ReadProcessMemory with that assumption. */
+            FIXME("CXHACK 15388: Returning PEB addres in ebx\n");
+            context->Ebx = (UINT_PTR)RtlGetCurrentPeb();
+        }
+    }
+#endif
+
     if (status) SetLastError( RtlNtStatusToDosError(status) );
     return !status;
 }
+
+#ifdef __i386_on_x86_64__
+/* We need a direct 32-bit implementation of this in case the caller is requesting
+   its own context.  Thunking to 64-bit mode would give us a context that won't
+   make any sense to the caller. */
+__ASM_THUNK_STDCALL( GetThreadContext, 8,
+                     "pushl %ebp\n\t"
+                     "movl %esp, %ebp\n\t"
+                     "pushl %esi\n\t"
+                     "andl $-0x10, %esp\n\t"
+                     "subl $0x20, %esp\n\t"
+                     "movl 0x8(%ebp), %eax\n\t"
+                     "movl 0xc(%ebp), %ecx\n\t"
+                     "movl %ecx, 0x4(%esp)\n\t"
+                     "movl %eax, (%esp)\n\t"
+                     "calll " __ASM_THUNK_STDCALL_SYMBOL("NtGetContextThread", 8) "\n\t"
+                     "subl $0x8, %esp\n\t"
+                     "movl %eax, %esi\n\t"
+                     "testl %eax, %eax\n\t"
+                     "je 1f\n\t"
+                     "movl %esi, (%esp)\n\t"
+                     "calll " __ASM_THUNK_STDCALL_SYMBOL("RtlNtStatusToDosError", 4) "\n\t"
+                     "subl $0x4, %esp\n\t"
+                     "movl %eax, %fs:0x34\n"
+                     "1:\n\t"
+                     "xorl %eax, %eax\n\t"
+                     "testl %esi, %esi\n\t"
+                     "sete %al\n\t"
+                     "leal -0x4(%ebp), %esp\n\t"
+                     "popl %esi\n\t"
+                     "popl %ebp\n\t"
+                     "retl $8\n\t" )
+#endif
 
 
 /***********************************************************************
@@ -274,7 +329,7 @@ BOOL WINAPI GetThreadContext( HANDLE handle,     /* [in]  Handle to thread with 
  */
 BOOL WINAPI Wow64GetThreadContext( HANDLE handle, WOW64_CONTEXT *context)
 {
-#ifdef __i386__
+#if defined(__i386__) || defined(__i386_on_x86_64__)
     NTSTATUS status = NtGetContextThread( handle, (CONTEXT *)context );
 #elif defined(__x86_64__)
     NTSTATUS status = RtlWow64GetThreadContext( handle, context );
@@ -285,6 +340,14 @@ BOOL WINAPI Wow64GetThreadContext( HANDLE handle, WOW64_CONTEXT *context)
     if (status) SetLastError( RtlNtStatusToDosError(status) );
     return !status;
 }
+
+#ifdef __i386_on_x86_64__
+/* We need a direct 32-bit implementation of this in case the caller is requesting
+   its own context.  Thunking to 64-bit mode would give us a context that won't
+   make any sense to the caller. */
+__ASM_THUNK_STDCALL( Wow64GetThreadContext, 8,
+                     "jmp " __ASM_THUNK_STDCALL_SYMBOL("GetThreadContext", 8) )
+#endif
 
 
 /**********************************************************************
@@ -723,6 +786,14 @@ void WINAPI KERNEL32_SetLastError( DWORD error ) /* [in] Per-thread error code *
     NtCurrentTeb()->LastErrorValue = error;
 }
 
+#ifdef __i386_on_x86_64__
+__ASM_THUNK_STDCALL( KERNEL32_SetLastError, 4,
+                     "movl 4(%esp),%eax\n\t"
+                     ".byte 0x64\n\t"
+                     "movl %eax,0x34\n\t"
+                     "ret $4" )
+#endif
+
 /**********************************************************************
  *              GetLastError (KERNEL32.@)
  *
@@ -735,6 +806,11 @@ DWORD WINAPI KERNEL32_GetLastError(void)
 {
     return NtCurrentTeb()->LastErrorValue;
 }
+
+#ifdef __i386_on_x86_64__
+__ASM_THUNK_STDCALL( KERNEL32_GetLastError, 0, ".byte 0x64\n\tmovl 0x34,%eax\n\tret" )
+#endif
+
 
 /***********************************************************************
  *		GetCurrentProcessId (KERNEL32.@)
@@ -749,6 +825,10 @@ DWORD WINAPI KERNEL32_GetCurrentProcessId(void)
     return HandleToULong(NtCurrentTeb()->ClientId.UniqueProcess);
 }
 
+#ifdef __i386_on_x86_64__
+__ASM_THUNK_STDCALL( KERNEL32_GetCurrentProcessId, 0, ".byte 0x64\n\tmovl 0x20,%eax\n\tret" )
+#endif
+
 /***********************************************************************
  *		GetCurrentThreadId (KERNEL32.@)
  *
@@ -762,6 +842,10 @@ DWORD WINAPI KERNEL32_GetCurrentThreadId(void)
     return HandleToULong(NtCurrentTeb()->ClientId.UniqueThread);
 }
 
+#ifdef __i386_on_x86_64__
+__ASM_THUNK_STDCALL( KERNEL32_GetCurrentThreadId, 0, ".byte 0x64\n\tmovl 0x24,%eax\n\tret" )
+#endif
+
 /***********************************************************************
  *           GetProcessHeap    (KERNEL32.@)
  */
@@ -769,6 +853,10 @@ HANDLE WINAPI KERNEL32_GetProcessHeap(void)
 {
     return NtCurrentTeb()->Peb->ProcessHeap;
 }
+
+#ifdef __i386_on_x86_64__
+__ASM_THUNK_STDCALL( KERNEL32_GetProcessHeap, 0, ".byte 0x64\n\tmovl 0x30,%eax\n\tmovl 0x18(%eax),%eax\n\tret")
+#endif
 
 /*************************************************************************
  *              rtlmode_to_win32mode

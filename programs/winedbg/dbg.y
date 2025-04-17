@@ -1,3 +1,8 @@
+%code top{
+#ifdef __i386_on_x86_64__
+#pragma clang default_addr_space(default)
+#endif
+}
 %{
 /*
  * Parser for command lines in the Wine debugger

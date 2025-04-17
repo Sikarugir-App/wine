@@ -8,6 +8,8 @@
 #ifndef __WINE_STDIO_H
 #define __WINE_STDIO_H
 
+#include "wine/winheader_enter.h"
+
 #include <crtdefs.h>
 
 #ifndef RC_INVOKED
@@ -81,7 +83,7 @@ extern "C" {
 #endif
 
 #ifndef _STDIO_DEFINED
-# ifdef __i386__
+# if defined(__i386__) || defined(__i386_on_x86_64__)
 FILE* __cdecl __p__iob(void);
 #  define _iob (__p__iob())
 # else
@@ -307,5 +309,7 @@ static inline int putw(int val, FILE* file) { return _putw(val, file); }
 static inline FILE* wpopen(const wchar_t* command,const wchar_t* mode) { return _wpopen(command, mode); }
 
 #include <poppack.h>
+
+#include "wine/winheader_exit.h"
 
 #endif /* __WINE_STDIO_H */

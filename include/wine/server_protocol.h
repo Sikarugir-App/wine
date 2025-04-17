@@ -8,6 +8,8 @@
 #ifndef __WINE_WINE_SERVER_PROTOCOL_H
 #define __WINE_WINE_SERVER_PROTOCOL_H
 
+#include <wine/winheader_enter.h>
+
 #include <stdarg.h>
 #include <stdlib.h>
 #include <time.h>
@@ -3140,7 +3142,8 @@ enum message_type
     MSG_POSTED,
     MSG_HARDWARE,
     MSG_WINEVENT,
-    MSG_HOOK_LL
+    MSG_HOOK_LL,
+    MSG_SURFACE
 };
 #define SEND_MSG_ABORT_IF_HUNG  0x01
 
@@ -3818,6 +3821,49 @@ struct get_surface_region_reply
     data_size_t    total_size;
     /* VARARG(region,rectangles); */
     char __pad_28[4];
+};
+
+
+
+struct create_shm_surface_request
+{
+    struct request_header __header;
+    user_handle_t  window;
+    data_size_t    mapping_size;
+    char __pad_20[4];
+};
+struct create_shm_surface_reply
+{
+    struct reply_header __header;
+    obj_handle_t   handle;
+    obj_handle_t   mapping;
+};
+
+
+
+struct lock_shm_surface_request
+{
+    struct request_header __header;
+    obj_handle_t   surface;
+    int            lock;
+    char __pad_20[4];
+};
+struct lock_shm_surface_reply
+{
+    struct reply_header __header;
+};
+
+
+
+struct flush_shm_surface_request
+{
+    struct request_header __header;
+    obj_handle_t   surface;
+    rectangle_t    bounds;
+};
+struct flush_shm_surface_reply
+{
+    struct reply_header __header;
 };
 
 
@@ -5962,6 +6008,9 @@ enum request
     REQ_get_windows_offset,
     REQ_get_visible_region,
     REQ_get_surface_region,
+    REQ_create_shm_surface,
+    REQ_lock_shm_surface,
+    REQ_flush_shm_surface,
     REQ_get_window_region,
     REQ_set_window_region,
     REQ_get_update_region,
@@ -6266,6 +6315,9 @@ union generic_request
     struct get_windows_offset_request get_windows_offset_request;
     struct get_visible_region_request get_visible_region_request;
     struct get_surface_region_request get_surface_region_request;
+    struct create_shm_surface_request create_shm_surface_request;
+    struct lock_shm_surface_request lock_shm_surface_request;
+    struct flush_shm_surface_request flush_shm_surface_request;
     struct get_window_region_request get_window_region_request;
     struct set_window_region_request set_window_region_request;
     struct get_update_region_request get_update_region_request;
@@ -6568,6 +6620,9 @@ union generic_reply
     struct get_windows_offset_reply get_windows_offset_reply;
     struct get_visible_region_reply get_visible_region_reply;
     struct get_surface_region_reply get_surface_region_reply;
+    struct create_shm_surface_reply create_shm_surface_reply;
+    struct lock_shm_surface_reply lock_shm_surface_reply;
+    struct flush_shm_surface_reply flush_shm_surface_reply;
     struct get_window_region_reply get_window_region_reply;
     struct set_window_region_reply set_window_region_reply;
     struct get_update_region_reply get_update_region_reply;
@@ -6691,6 +6746,8 @@ union generic_reply
     struct resume_process_reply resume_process_reply;
 };
 
-#define SERVER_PROTOCOL_VERSION 588
+#define SERVER_PROTOCOL_VERSION 589
+
+#include <wine/winheader_exit.h>
 
 #endif /* __WINE_WINE_SERVER_PROTOCOL_H */

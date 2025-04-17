@@ -1189,23 +1189,23 @@ static void test_reg_open_key(void)
         ok(hkResult != NULL, "expected hkResult != NULL\n");
         RegCloseKey(hkResult);
 
-        ret = RegOpenKeyA((HKEY)(HandleToUlong(HKEY_CURRENT_USER) | (ULONG64)1 << 32), "Software", &hkResult);
+        ret = RegOpenKeyA((HKEY)(ULONG_PTR)(HandleToUlong(HKEY_CURRENT_USER) | (ULONG64)1 << 32), "Software", &hkResult);
         ok(ret == ERROR_SUCCESS, "expected ERROR_SUCCESS, got %d\n", ret);
         ok(hkResult != NULL, "expected hkResult != NULL\n");
         RegCloseKey(hkResult);
 
-        ret = RegOpenKeyA((HKEY)(HandleToUlong(HKEY_CURRENT_USER) | (ULONG64)0xdeadbeef << 32), "Software", &hkResult);
+        ret = RegOpenKeyA((HKEY)(ULONG_PTR)(HandleToUlong(HKEY_CURRENT_USER) | (ULONG64)0xdeadbeef << 32), "Software", &hkResult);
         ok(ret == ERROR_SUCCESS, "expected ERROR_SUCCESS, got %d\n", ret);
         ok(hkResult != NULL, "expected hkResult != NULL\n");
         RegCloseKey(hkResult);
 
-        ret = RegOpenKeyA((HKEY)(HandleToUlong(HKEY_CURRENT_USER) | (ULONG64)0xffffffff << 32), "Software", &hkResult);
+        ret = RegOpenKeyA((HKEY)(ULONG_PTR)(HandleToUlong(HKEY_CURRENT_USER) | (ULONG64)0xffffffff << 32), "Software", &hkResult);
         ok(ret == ERROR_SUCCESS, "expected ERROR_SUCCESS, got %d\n", ret);
         ok(hkResult != NULL, "expected hkResult != NULL\n");
         RegCloseKey(hkResult);
 
         /* HKEY_LOCAL_MACHINE */
-        ret = RegOpenKeyA((HKEY)(HandleToUlong(HKEY_LOCAL_MACHINE) | (ULONG64)0xdeadbeef << 32), "Software", &hkResult);
+        ret = RegOpenKeyA((HKEY)(ULONG_PTR)(HandleToUlong(HKEY_LOCAL_MACHINE) | (ULONG64)0xdeadbeef << 32), "Software", &hkResult);
         ok(ret == ERROR_SUCCESS, "expected ERROR_SUCCESS, got %d\n", ret);
         ok(hkResult != NULL, "expected hkResult != NULL\n");
         RegCloseKey(hkResult);

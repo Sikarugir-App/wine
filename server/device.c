@@ -20,6 +20,7 @@
 
 #include "config.h"
 #include "wine/port.h"
+#define WINE_RBTREE_HOSTADDRSPACE
 #include "wine/rbtree.h"
 
 #include <assert.h>

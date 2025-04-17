@@ -18,7 +18,7 @@
  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
  */
 
-#ifdef __x86_64__
+#if defined(__x86_64__) && !defined(__i386_on_x86_64__)
 
 #include "config.h"
 #include "wine/port.h"
@@ -54,6 +54,9 @@
 #ifdef HAVE_LIBUNWIND_H
 # define UNW_LOCAL_ONLY
 # include <libunwind.h>
+#endif
+#ifdef __APPLE__
+# include <mach/mach.h>
 #endif
 
 #define NONAMELESSUNION
@@ -327,6 +330,8 @@ static inline struct amd64_thread_data *amd64_thread_data(void)
 {
     return (struct amd64_thread_data *)NtCurrentTeb()->SystemReserved2;
 }
+
+extern void DECLSPEC_NORETURN __wine_syscall_dispatcher( void );
 
 /***********************************************************************
  * Dynamic unwind table
@@ -3284,6 +3289,7 @@ NTSTATUS signal_alloc_thread( TEB **teb )
     {
         (*teb)->Tib.Self = &(*teb)->Tib;
         (*teb)->Tib.ExceptionList = (void *)~0UL;
+        (*teb)->WOW32Reserved = __wine_syscall_dispatcher;
     }
     return status;
 }
@@ -3305,8 +3311,17 @@ void signal_free_thread( TEB *teb )
  */
 static void *mac_thread_gsbase(void)
 {
+    struct thread_identifier_info tiinfo;
+    unsigned int info_count = THREAD_IDENTIFIER_INFO_COUNT;
     static int gsbase_offset = -1;
     void *ret;
+
+    kern_return_t kr = thread_info(mach_thread_self(), THREAD_IDENTIFIER_INFO, (thread_info_t) &tiinfo, &info_count);
+    if (kr == KERN_SUCCESS)
+    {
+        TRACE("pthread_self() %p thread ID %llx gsbase %llx\n", pthread_self(), tiinfo.thread_id, tiinfo.thread_handle);
+        return (void*)tiinfo.thread_handle;
+    }
 
     if (gsbase_offset < 0)
     {
@@ -4619,4 +4634,4 @@ __ASM_STDCALL_FUNC( DbgBreakPoint, 0, "int $3; ret")
  */
 __ASM_STDCALL_FUNC( DbgUserBreakPoint, 0, "int $3; ret")
 
-#endif  /* __x86_64__ */
+#endif  /* __x86_64__ && !__i386_on_x86_64__ */
