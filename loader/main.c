@@ -70,6 +70,63 @@ static void init_reserved_areas(void)
     }
 }
 
+#elif defined(__APPLE__) && defined(__x86_64__)
+
+#include <mach/mach.h>
+#include <mach/mach_vm.h>
+
+/* the preloader will set this variable */
+const __attribute((visibility("default"))) struct wine_preload_info *wine_main_preload_info = NULL;
+
+/* Loader started without the preloader (missing, or a build with neither the preloader
+ * nor the WINE_RESERVE section): the low 8GB would be left to the system frameworks and
+ * every fixed-address PE image and 32-bit allocation would fail later.  Reserve what is
+ * still free in that range now and report it the way the preloader does, so ntdll can
+ * still place 32-bit code there.  Frameworks that already own pages in the range keep
+ * them; only the holes are mapped. */
+static struct wine_preload_info fallback_preload_info[64];
+
+static void init_reserved_areas(void)
+{
+    static const mach_vm_address_t low = 0x1000, high = 0x200000000;
+    mach_vm_address_t addr = low;
+    unsigned int count = 0;
+
+    if (wine_main_preload_info) return;
+
+    while (addr < high && count < sizeof(fallback_preload_info) / sizeof(fallback_preload_info[0]) - 1)
+    {
+        vm_region_basic_info_data_64_t info;
+        mach_msg_type_number_t info_count = VM_REGION_BASIC_INFO_COUNT_64;
+        mach_port_t object = MACH_PORT_NULL;
+        mach_vm_address_t region = addr, hole_end;
+        mach_vm_size_t size = 0;
+        kern_return_t kr;
+
+        kr = mach_vm_region( mach_task_self(), &region, &size, VM_REGION_BASIC_INFO_64,
+                             (vm_region_info_t)&info, &info_count, &object );
+        if (object != MACH_PORT_NULL) mach_port_deallocate( mach_task_self(), object );
+        hole_end = (kr == KERN_SUCCESS && region < high) ? region : high;
+
+        if (hole_end > addr &&
+            mmap( (void *)addr, hole_end - addr, PROT_NONE,
+                  MAP_FIXED | MAP_NORESERVE | MAP_PRIVATE | MAP_ANON, -1, 0 ) == (void *)addr)
+        {
+            fallback_preload_info[count].addr = (void *)addr;
+            fallback_preload_info[count].size = hole_end - addr;
+            count++;
+        }
+        if (kr != KERN_SUCCESS) break;
+        addr = region + size;
+    }
+
+    if (count)
+    {
+        fprintf( stderr, "wine: preloader not used, reserved %u free ranges below 8GB at run time\n", count );
+        wine_main_preload_info = fallback_preload_info;
+    }
+}
+
 #else
 
 /* the preloader will set this variable */
