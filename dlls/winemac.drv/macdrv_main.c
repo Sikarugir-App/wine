@@ -265,6 +265,8 @@ static inline DWORD get_config_key(HKEY defkey, HKEY appkey, const char *name,
  *
  * Set up the Mac driver options.
  */
+static char *keyboard_layout_id;   /* input source ID to select at startup, from the KeyboardLayout option */
+
 static void setup_options(void)
 {
     static const WCHAR macdriverW[] = {'\\','M','a','c',' ','D','r','i','v','e','r',0};
@@ -345,6 +347,14 @@ static void setup_options(void)
 
     if (!get_config_key(hkey, appkey, "UsePreciseScrolling", buffer, sizeof(buffer)))
         use_precise_scrolling = IS_OPTION_TRUE(buffer[0]);
+
+    /* Keyboard input source to select when the process starts, by input source ID,
+       e.g. "com.apple.keylayout.US" for games that read scan codes of a US layout. */
+    if (!get_config_key(hkey, appkey, "KeyboardLayout", buffer, sizeof(buffer)) && buffer[0])
+    {
+        keyboard_layout_id = malloc(ARRAY_SIZE(buffer) * 3);
+        ntdll_wcstoumbs(buffer, lstrlenW(buffer) + 1, keyboard_layout_id, ARRAY_SIZE(buffer) * 3, FALSE);
+    }
 
     if (!get_config_key(hkey, appkey, "OpenGLSurfaceMode", buffer, sizeof(buffer)))
     {
@@ -436,6 +446,9 @@ static NTSTATUS macdrv_init(void *arg)
         ERR("Failed to start Cocoa app main loop\n");
         return STATUS_UNSUCCESSFUL;
     }
+
+    if (keyboard_layout_id && !macdrv_select_input_source_by_id(keyboard_layout_id))
+        WARN("keyboard layout %s is not installed\n", debugstr_a(keyboard_layout_id));
 
     init_user_driver();
     return STATUS_SUCCESS;

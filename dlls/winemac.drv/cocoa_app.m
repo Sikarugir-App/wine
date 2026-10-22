@@ -2699,6 +2699,44 @@ bool macdrv_select_input_source(TISInputSourceRef input_source)
     return ret;
 }
 
+/***********************************************************************
+ *              macdrv_select_input_source_by_id
+ *
+ * Select the keyboard input source with the given ID, e.g. "com.apple.keylayout.US".
+ * The source is enabled first if the user does not have it in the input menu.
+ */
+bool macdrv_select_input_source_by_id(const char *source_id)
+{
+    __block bool ret = false;
+
+    OnMainThread(^{
+        CFStringRef id = CFStringCreateWithCString(NULL, source_id, kCFStringEncodingUTF8);
+        const void *filter_keys[2] = { kTISPropertyInputSourceID, kTISPropertyInputSourceIsSelectCapable };
+        const void *filter_values[2] = { id, kCFBooleanTrue };
+        CFDictionaryRef filter_dict;
+        CFArrayRef input_list;
+
+        filter_dict = CFDictionaryCreate(NULL, filter_keys, filter_values, 2,
+                                         &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+        input_list = TISCreateInputSourceList(filter_dict, true);
+
+        if (input_list && CFArrayGetCount(input_list))
+        {
+            TISInputSourceRef input = (TISInputSourceRef)CFArrayGetValueAtIndex(input_list, 0);
+            CFBooleanRef enabled = TISGetInputSourceProperty(input, kTISPropertyInputSourceIsEnabled);
+
+            if (!enabled || !CFBooleanGetValue(enabled)) TISEnableInputSource(input);
+            ret = (TISSelectInputSource(input) == noErr);
+        }
+
+        if (input_list) CFRelease(input_list);
+        CFRelease(filter_dict);
+        CFRelease(id);
+    });
+
+    return ret;
+}
+
 bool macdrv_get_ime_open_status(TISInputSourceRef input_source)
 {
     __block bool ret;
