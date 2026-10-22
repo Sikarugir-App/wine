@@ -53,6 +53,7 @@ bool use_precise_scrolling = true;
 int gl_surface_mode = GL_SURFACE_IN_FRONT_OPAQUE;
 bool retina_enabled = false;
 bool enable_app_nap = false;
+const char *process_name = NULL;
 
 pthread_key_t macdrv_thread_data_key = 0;
 UINT64 app_icon_callback = 0;
@@ -360,6 +361,22 @@ static void setup_options(void)
 
     if (!get_config_key(hkey, appkey, "EnableAppNap", buffer, sizeof(buffer)))
         enable_app_nap = IS_OPTION_TRUE(buffer[0]);
+
+    /* Name shown in the application menu when running from the bare loader.  Defaults
+       to the executable name, so that a game shows up as "Steam" rather than "Wine".
+       (The Dock label comes from the loader's file name; there is no API to change it.) */
+    if (get_config_key(hkey, appkey, "ProcessName", buffer, sizeof(buffer)))
+    {
+        static const WCHAR exeW[] = {'.','e','x','e',0};
+        lstrcpyW(buffer, appname);
+        if ((len = lstrlenW(buffer)) > 4 && !wcsicmp(buffer + len - 4, exeW)) buffer[len - 4] = 0;
+    }
+    if (buffer[0])
+    {
+        char *name = malloc(ARRAY_SIZE(buffer) * 3);
+        ntdll_wcstoumbs(buffer, lstrlenW(buffer) + 1, name, ARRAY_SIZE(buffer) * 3, FALSE);
+        process_name = name;
+    }
 
     /* Don't use appkey.  The DPI and monitor sizes should be consistent for all
        processes in the prefix. */
