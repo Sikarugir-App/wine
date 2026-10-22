@@ -247,6 +247,10 @@ static NSString* WineLocalizedString(unsigned int stringID)
             // Application menu
             submenu = [[[NSMenu alloc] initWithTitle:WineLocalizedString(STRING_MENU_WINE)] autorelease];
             bundleName = [[NSBundle mainBundle] objectForInfoDictionaryKey:(NSString*)kCFBundleNameKey];
+            // Running from the bare loader rather than an .app bundle: name the menu after
+            // the Windows program ("Hide Steam", "Quit Steam") instead of "Wine".
+            if (process_name && ![[[NSBundle mainBundle] bundlePath] hasSuffix:@".app"])
+                bundleName = [NSString stringWithUTF8String:process_name];
 
             if ([bundleName length])
                 title = [NSString stringWithFormat:WineLocalizedString(STRING_MENU_ITEM_HIDE_APPNAME), bundleName];

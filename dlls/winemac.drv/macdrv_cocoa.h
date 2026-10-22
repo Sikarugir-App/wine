@@ -116,6 +116,7 @@ extern CFDictionaryRef localized_strings;
 extern bool retina_enabled;  /* Whether Retina mode is enabled via registry setting. */
 extern bool retina_on;       /* Whether Retina mode is currently active (enabled and display is in default mode). */
 extern bool enable_app_nap;
+extern const char *process_name;   /* application menu name when not running from an .app bundle */
 
 static inline CGRect cgrect_mac_from_win(CGRect rect)
 {
