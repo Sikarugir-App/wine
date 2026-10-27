@@ -3646,7 +3646,15 @@ static struct thread_data *init_thread_data( void *ptr )
 /* enable use of a large address space when allowed by the application */
 static void set_large_address_space(void)
 {
+    const char *large_address_space_override;
+    BOOL large_address_aware = main_image_info.ImageCharacteristics & IMAGE_FILE_LARGE_ADDRESS_AWARE;
+
     if (is_machine_64bit( main_image_info.Machine )) return;
+
+    /* Compatibility override for 32-bit code with overflowing memory-size probes. */
+    large_address_space_override = getenv( "WINE_LARGE_ADDRESS_AWARE" );
+    if (large_address_space_override && !strcmp( large_address_space_override, "0" ))
+        large_address_aware = FALSE;
 
     if (main_image_info.Machine == IMAGE_FILE_MACHINE_I386)
     {
@@ -3660,7 +3668,7 @@ static void set_large_address_space(void)
 
     if (is_win64)
     {
-        if (main_image_info.ImageCharacteristics & IMAGE_FILE_LARGE_ADDRESS_AWARE)
+        if (large_address_aware)
         {
             user_space_wow_limit = limit_4g - 1;
             /* block a bit of top memory: some apps break if the entire high 2G is available */
@@ -3672,7 +3680,7 @@ static void set_large_address_space(void)
             set_mem_area_state( (void *)0x7fff0000, 0x10000, AREA_BLOCKED );
         }
     }
-    else if (!(main_image_info.ImageCharacteristics & IMAGE_FILE_LARGE_ADDRESS_AWARE))
+    else if (!large_address_aware)
     {
         reserve_area( (void *)limit_2g, host_addr_space_limit );
         return;
